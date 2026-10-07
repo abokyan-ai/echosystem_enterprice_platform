@@ -180,7 +180,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")
-        self.assertEqual(report["summary"]["rules_executed"], 37)
+        self.assertEqual(report["summary"]["rules_executed"], 40)
 
     def test_existing_governance_evaluated_once_for_all_rules(self):
         from architecture_fitness.governance import evaluate_governance
@@ -188,7 +188,7 @@ class HarnessTests(unittest.TestCase):
         with patch("architecture_fitness.rules.evaluate_governance", wraps=evaluate_governance) as evaluator:
             report = execute(model, as_of=TODAY)
         self.assertEqual(evaluator.call_count, 1)
-        self.assertEqual(report["summary"]["rules_executed"], 37)
+        self.assertEqual(report["summary"]["rules_executed"], 40)
 
 
 class BootstrapFitnessTests(unittest.TestCase):
@@ -233,3 +233,35 @@ class CliFitnessTests(unittest.TestCase):
             model = fixture((module("platform-cli", "tooling", ("adapter",)), module("adapter", "adapter")), (Source("tools/commands/example.py", "platform-cli", ((target, 4),)),))
             report = execute(model, rule_ids=("ARCH-CLI-003",))
             self.assertEqual(report["summary"]["status"], expected)
+
+
+class SemanticIdentityFitnessTests(unittest.TestCase):
+    def test_semantic_id_class_cannot_be_defined_in_tooling(self):
+        model = fixture((module("platform-cli", "tooling"),), (Source("tools/example.py", "platform-cli", classes=(("SemanticElementId", 8),)),))
+        report = execute(model, rule_ids=("ARCH-SK-001",))
+        self.assertEqual(report["summary"]["status"], "FAILED")
+        self.assertEqual(report["violations"][0]["line"], 8)
+
+    def test_semantic_id_definition_is_allowed_in_kernel(self):
+        model = fixture((module("semantic-kernel", "kernel"),), (Source("platform/kernel/public.py", "semantic-kernel", classes=(("SemanticElementId", 3),)),))
+        self.assertEqual(execute(model, rule_ids=("ARCH-SK-001",))["summary"]["status"], "HEALTHY")
+
+    def test_kernel_independence_survives_relaxed_zone_policy(self):
+        policy = copy.deepcopy(POLICY)
+        policy["zones"]["kernel"]["allowed_zones"].append("runtime")
+        model = fixture((module("semantic-kernel", "kernel", ("runtime",)), module("runtime", "runtime")), policy=policy)
+        report = execute(model, rule_ids=("ARCH-SK-002",))
+        self.assertEqual(report["summary"]["status"], "FAILED")
+        self.assertEqual(report["violations"][0]["dependency_path"], ("semantic-kernel", "runtime"))
+
+    def test_kernel_public_contract_rejects_serializer_framework_and_internals(self):
+        for target in ("json", "django", "runtime.internal.host"):
+            model = fixture((module("semantic-kernel", "kernel", ("runtime",)), module("runtime", "runtime")), (Source("platform/kernel/public.py", "semantic-kernel", ((target, 4),)),))
+            report = execute(model, rule_ids=("ARCH-SK-003",))
+            self.assertEqual(report["summary"]["status"], "FAILED")
+
+    def test_class_definitions_reuse_existing_ast_discovery(self):
+        model = discover(ROOT)
+        source = next(s for s in model.sources if s.owner == "semantic-kernel" and s.file.endswith("/public.py"))
+        self.assertIn("SemanticElementId", [name for name, line in source.classes])
+        self.assertEqual(model.discovery_metadata["scan_passes"], 1)

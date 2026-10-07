@@ -151,4 +151,21 @@ def default_registry():
                     findings.append(ArchitectureViolation("ARCH-CLI-003", Severity.CRITICAL, "CLI must not import adapter internals", source.owner, owner.id, target, "Inject the adapter's public contract from the composition root.", file=source.file, line=line))
         return findings
     registry.register(ArchitectureRule("ARCH-CLI-003", "No CLI adapter internals", "CLI must use public adapter contracts", "public-api", Severity.CRITICAL, "platform-cli", cli_adapter))
+    def semantic_id_owner(model, context):
+        return [ArchitectureViolation("ARCH-SK-001", Severity.CRITICAL, "SemanticElementId definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class SemanticElementId", "Use semantic_kernel.public.SemanticElementId; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "SemanticElementId" and source.owner != "semantic-kernel"]
+    registry.register(ArchitectureRule("ARCH-SK-001", "Semantic identity ownership", "SemanticElementId class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", semantic_id_owner))
+    kernel_paths = [forbidden_path_rule("ARCH-SK-002", "Semantic Kernel must remain independent of non-kernel modules", "kernel", target) for target in ("model", "compiled-contracts", "compiler", "runtime", "experience", "adapter", "application", "tooling", "bootstrap-contracts")]
+    registry.register(ArchitectureRule("ARCH-SK-002", "Semantic identity independence", "Kernel must not depend on non-kernel modules", "dependency", Severity.CRITICAL, "kernel", lambda m, c: [v for r in kernel_paths for v in r.evaluate(m, c)]))
+    def kernel_public(model, context):
+        from dataclasses import replace
+        public_files = {s.file for s in model.sources if s.owner == "semantic-kernel" and s.file.endswith("/public.py")}
+        prohibited = {"ARCH-API-001", "ARCH-API-002", "ARCH-EXT-001", "ARCH-DEP-001", "ARCH-DEP-004", "ARCH-DEP-005", "ARCH-DEP-006", "ARCH-DEP-007", "ARCH-DEP-010"}
+        findings = []
+        for finding in baseline(model, context)["violations"]:
+            filename = finding["location"].rsplit(":", 1)[0]
+            if finding["source"] == "semantic-kernel" and filename in public_files and finding["rule_id"] in prohibited:
+                violation = legacy_rule(finding["rule_id"], "Kernel public dependency", "public-api", Severity.CRITICAL)
+                findings.extend(replace(v, rule_id="ARCH-SK-003") for v in violation.evaluate(model, context) if v.source == "semantic-kernel" and v.file == filename and v.target == finding["target"])
+        return list({(v.file, v.line, v.target, v.message): v for v in findings}.values())
+    registry.register(ArchitectureRule("ARCH-SK-003", "Kernel public contract neutrality", "Kernel public source must not import forbidden infrastructure or internal surfaces", "public-api", Severity.CRITICAL, "semantic-kernel public.py", kernel_public))
     return registry

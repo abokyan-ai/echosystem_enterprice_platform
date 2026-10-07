@@ -33,8 +33,10 @@ def discover(root: Path):
                 tree = ast.parse(path.read_text(), filename=filename)
                 scans += 1
                 targets = tuple(import_targets(tree, metadata[owner]["package"], resolved.relative_to(registered[owner])))
-                calls = tuple((node.func.id, node.lineno) for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"__import__", "exec", "eval"})
-                sources.append(Source(filename, owner, targets, calls))
+                nodes = tuple(ast.walk(tree))
+                calls = tuple((node.func.id, node.lineno) for node in nodes if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"__import__", "exec", "eval"})
+                classes = tuple((node.name, node.lineno) for node in nodes if isinstance(node, ast.ClassDef))
+                sources.append(Source(filename, owner, targets, calls, classes=classes))
             except (SyntaxError, ArchitectureError) as exc:
                 sources.append(Source(filename, owner, issue=str(exc), issue_kind="syntax"))
     exceptions = read_json(root / "docs/architecture/dependency-exceptions.json")["exceptions"]

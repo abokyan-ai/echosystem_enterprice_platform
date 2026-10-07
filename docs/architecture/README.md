@@ -35,3 +35,6 @@ ARC-04: see [platform bootstrap](platform-bootstrap.md). Hosting contracts live 
 
 
 ARC-05: [CLI usage and extension](../developer/cli.md), [ADR-0007](decisions/ADR-0007-cli-as-thin-developer-adapter.md). CLI registration/handlers/rendering are separated; core remains independent of tooling.
+
+
+SK-01: [SemanticElementId](../kernel/semantic-element-id.md), [ADR-0008](decisions/ADR-0008-semantic-element-identity.md). The existing Kernel owns the pure identity; serializer mapping remains outside Kernel production code.
