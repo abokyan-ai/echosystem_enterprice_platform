@@ -1,3 +1,3 @@
 # Integration tests
 
-Reserved test location. ARC-01 introduces no integration behavior or artificial tests. Add tests with the first applicable public contract or vertical slice. Root test discovery already includes contracts and integration; register future compatibility/migration suites in scripts/dev.py when implemented.
+ARC-02 tests validate public registration surfaces and executable dependency commands. No semantic/compiler/runtime business behavior is implemented or tested.

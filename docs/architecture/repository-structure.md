@@ -26,3 +26,7 @@ Split compiler resolution/validation/artifact builder on distinct stable APIs. K
 Create `platform/experience` modules only when experience-model/presentation-IR/design-system contracts exist. Frontend renderers remain adapters. Add `platform/packages` for package model/extensions/dependency resolution, `platform/evolution` for versioning/compatibility/migration, and `platform/control-plane` for artifact registry/deployments/tenancy/configuration when a slice requires them. Extensions consume public APIs and never mutate core internals.
 
 These locations are documented future boundaries; adding them does not require restructuring existing modules. Register new physical modules before introducing source.
+
+## ARC-02 governance files
+
+`architecture.json` is schema v2 with zone/owner/language/public API/dependency category metadata. `architecture-policy.json` governs zone direction, stdlib capabilities and external adapter profiles. `dependency-exceptions.json` has no waivers. Dependency tooling distinguishes declared and observed edges; no platform implementation is added. Selected future adapters are Angular/PrimeNG frontend, Django/DRF HTTP and in-memory mock data without DB.

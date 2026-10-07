@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "zones": {
+    "kernel": {
+      "path_prefix": "platform/kernel/",
+      "allowed_zones": [],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-DEP-001"
+    },
+    "model": {
+      "path_prefix": "platform/model/",
+      "allowed_zones": [
+        "kernel",
+        "model"
+      ],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-DEP-002"
+    },
+    "compiled-contracts": {
+      "path_prefix": "platform/contracts/",
+      "allowed_zones": [
+        "kernel",
+        "compiled-contracts"
+      ],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-DEP-005"
+    },
+    "compiler": {
+      "path_prefix": "platform/compiler/",
+      "allowed_zones": [
+        "kernel",
+        "model",
+        "compiled-contracts",
+        "compiler"
+      ],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings",
+        "json"
+      ],
+      "rule_id": "ARCH-DEP-003"
+    },
+    "runtime": {
+      "path_prefix": "platform/runtime/",
+      "allowed_zones": [
+        "kernel",
+        "compiled-contracts",
+        "runtime"
+      ],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-DEP-004"
+    },
+    "experience": {
+      "path_prefix": "platform/experience/",
+      "allowed_zones": [
+        "kernel",
+        "model",
+        "compiled-contracts",
+        "experience"
+      ],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-DEP-008"
+    },
+    "adapter": {
+      "path_prefix": "adapters/",
+      "allowed_zones": [
+        "kernel",
+        "compiled-contracts",
+        "runtime",
+        "experience"
+      ],
+      "stdlib": [
+        "*"
+      ],
+      "rule_id": "ARCH-DEP-006"
+    },
+    "application": {
+      "path_prefix": "apps/",
+      "allowed_zones": [
+        "kernel",
+        "model",
+        "compiled-contracts",
+        "runtime",
+        "experience",
+        "adapter"
+      ],
+      "stdlib": [
+        "*"
+      ],
+      "rule_id": "ARCH-DEP-007"
+    },
+    "tooling": {
+      "path_prefix": "tools/",
+      "allowed_zones": [
+        "kernel",
+        "model",
+        "compiled-contracts",
+        "compiler",
+        "runtime",
+        "experience",
+        "adapter",
+        "application"
+      ],
+      "stdlib": [
+        "*"
+      ],
+      "rule_id": "ARCH-DEP-010"
+    }
+  },
+  "external_dependencies": {
+    "django": {
+      "distribution": "Django",
+      "category": "framework",
+      "allowed_zones": [
+        "adapter"
+      ],
+      "profile": "django-rest-framework",
+      "path_prefix": "adapters/http/"
+    },
+    "rest_framework": {
+      "distribution": "djangorestframework",
+      "category": "framework",
+      "allowed_zones": [
+        "adapter"
+      ],
+      "profile": "django-rest-framework",
+      "path_prefix": "adapters/http/"
+    }
+  },
+  "technology_decisions": {
+    "frontend": "Angular + PrimeNG",
+    "backend": "Django + Django REST Framework",
+    "data": "Contract-based in-memory mock adapter; no database required"
+  },
+  "generic_names": [
+    "common",
+    "shared",
+    "utils",
+    "helpers",
+    "misc",
+    "base",
+    "shared-everything"
+  ],
+  "profiles": {
+    "django-rest-framework": {
+      "zone": "adapter",
+      "path_prefix": "adapters/http/",
+      "allowed_zones": [
+        "compiled-contracts",
+        "runtime"
+      ]
+    },
+    "angular-primeng": {
+      "zone": "adapter",
+      "path_prefix": "adapters/frontend/",
+      "allowed_zones": [
+        "compiled-contracts",
+        "runtime",
+        "experience"
+      ]
+    },
+    "mock-data": {
+      "zone": "adapter",
+      "path_prefix": "adapters/data/",
+      "allowed_zones": [
+        "compiled-contracts",
+        "runtime"
+      ]
+    }
+  }
+}
