@@ -1,0 +1,23 @@
+name: ARC-01 checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python scripts/dev.py install
+      - run: python scripts/dev.py lint
+      - run: python scripts/dev.py build
+      - run: python scripts/dev.py test
+      - run: python scripts/dev.py test:architecture
+      - run: python scripts/dev.py doctor

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "minimum_python": "3.11",
+  "modules": [
+    {
+      "name": "semantic-kernel",
+      "path": "platform/kernel/semantic-kernel",
+      "package": "semantic_kernel",
+      "allowed_dependencies": []
+    },
+    {
+      "name": "model-core",
+      "path": "platform/model/model-core",
+      "package": "model_core",
+      "allowed_dependencies": [
+        "semantic-kernel"
+      ]
+    },
+    {
+      "name": "compiled-contracts",
+      "path": "platform/contracts/compiled-contracts",
+      "package": "compiled_contracts",
+      "allowed_dependencies": [
+        "semantic-kernel"
+      ]
+    },
+    {
+      "name": "compiler-core",
+      "path": "platform/compiler/compiler-core",
+      "package": "compiler_core",
+      "allowed_dependencies": [
+        "semantic-kernel",
+        "model-core",
+        "compiled-contracts"
+      ]
+    },
+    {
+      "name": "runtime-core",
+      "path": "platform/runtime/runtime-core",
+      "package": "runtime_core",
+      "allowed_dependencies": [
+        "semantic-kernel",
+        "compiled-contracts"
+      ]
+    },
+    {
+      "name": "platform-cli",
+      "path": "tools/platform-cli",
+      "package": "platform_cli",
+      "allowed_dependencies": []
+    }
+  ]
+}
