@@ -174,13 +174,13 @@ class HarnessTests(unittest.TestCase):
 
     def test_actual_repository_discovery_contract(self):
         model = discover(ROOT)
-        self.assertEqual(len(model.modules), 6)
+        self.assertEqual(len(model.modules), 7)
         self.assertEqual(model.discovery_metadata["scan_passes"], 1)
-        self.assertEqual(len(model.graph("observed")["platform-cli"]), 5)
+        self.assertEqual(len(model.graph("observed")["platform-cli"]), 6)
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")
-        self.assertEqual(report["summary"]["rules_executed"], 30)
+        self.assertEqual(report["summary"]["rules_executed"], 34)
 
     def test_existing_governance_evaluated_once_for_all_rules(self):
         from architecture_fitness.governance import evaluate_governance
@@ -188,4 +188,27 @@ class HarnessTests(unittest.TestCase):
         with patch("architecture_fitness.rules.evaluate_governance", wraps=evaluate_governance) as evaluator:
             report = execute(model, as_of=TODAY)
         self.assertEqual(evaluator.call_count, 1)
-        self.assertEqual(report["summary"]["rules_executed"], 30)
+        self.assertEqual(report["summary"]["rules_executed"], 34)
+
+
+class BootstrapFitnessTests(unittest.TestCase):
+    def test_bootstrap_invariants_enforced_even_with_relaxed_allowlists(self):
+        for rule_id, target_zone in (("ARCH-BOOT-002", "adapter"), ("ARCH-BOOT-003", "tooling"), ("ARCH-BOOT-004", "application")):
+            with self.subTest(rule=rule_id):
+                core = module("core", "runtime", ("target",))
+                target = module("target", target_zone)
+                policy = copy.deepcopy(POLICY)
+                policy["zones"]["runtime"]["allowed_zones"].append(target_zone)
+                report = execute(fixture((core, target), policy=policy), rule_ids=(rule_id,))
+                self.assertEqual(report["summary"]["status"], "FAILED")
+                self.assertEqual(report["violations"][0]["dependency_path"], ("core", "target"))
+
+    def test_bootstrap_contracts_cannot_import_host(self):
+        model = fixture((module("contract", "bootstrap-contracts", ("host",)), module("host", "tooling")))
+        report = execute(model, rule_ids=("ARCH-BOOT-CONTRACT-001",))
+        self.assertEqual(report["summary"]["status"], "FAILED")
+
+    def test_contract_dependency_does_not_grant_host_dependency(self):
+        model = fixture((module("core", "runtime", ("contract",)), module("contract", "bootstrap-contracts")))
+        report = execute(model, rule_ids=("ARCH-BOOT-003",))
+        self.assertEqual(report["summary"]["status"], "HEALTHY")

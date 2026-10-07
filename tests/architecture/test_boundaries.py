@@ -236,7 +236,7 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(model["observed_dependencies"], [])
         self.assertEqual(model["declared_dependencies"], ["semantic-kernel"])
         cli = next(m for m in report["modules"] if m["module"] == "platform-cli")
-        self.assertEqual(len(cli["observed_dependencies"]), 5)
+        self.assertEqual(len(cli["observed_dependencies"]), 6)
 
     def test_violation_fails_checker_and_build_even_when_python_compiles(self):
         self.source("model-core", "import runtime_core.public\n")

@@ -24,6 +24,8 @@ jobs:
       - run: python scripts/dev.py test
       - run: python scripts/dev.py test:architecture
       - run: python scripts/dev.py doctor
+      - run: python scripts/dev.py run --once
+      - run: python scripts/dev.py run --once --config config/test.json
       - name: Upload architecture fitness report
         if: always()
         uses: actions/upload-artifact@v4

@@ -123,4 +123,14 @@ def default_registry():
         from dataclasses import replace
         return [replace(v, rule_id="ARCH-EXTDEP-001", severity=Severity.CRITICAL) for v in old_rule.evaluate(model, context) if v.source in kernels]
     registry.register(ArchitectureRule("ARCH-EXTDEP-001", "Restricted kernel dependencies", "Kernel must not depend on infrastructure/framework packages", "external-dependency", Severity.CRITICAL, "kernel", kernel_external))
+    contract_rule = legacy_rule("ARCH-BOOT-CONTRACT-001", "Hosting contracts remain independent", "dependency", Severity.CRITICAL)
+    contract_paths = [forbidden_path_rule("ARCH-BOOT-CONTRACT-001", "Hosting contracts remain independent", "bootstrap-contracts", target) for target in ("kernel", "model", "compiled-contracts", "compiler", "runtime", "experience", "adapter", "application", "tooling")]
+    registry.register(ArchitectureRule("ARCH-BOOT-CONTRACT-001", "Hosting contracts remain independent", "Independent hosting contracts", "dependency", Severity.CRITICAL, "bootstrap-contracts", lambda m, c: contract_rule.evaluate(m, c) + [v for r in contract_paths for v in r.evaluate(m, c)]))
+    for rule_id, name, target in (
+        ("ARCH-BOOT-002", "Adapter selection belongs to outer composition boundaries", "adapter"),
+        ("ARCH-BOOT-003", "Core must not depend on bootstrap implementation/tooling", "tooling"),
+        ("ARCH-BOOT-004", "Platform must not depend on applications", "application"),
+    ):
+        rules = [forbidden_path_rule(rule_id, name, zone, target) for zone in ("kernel", "model", "compiled-contracts", "compiler", "runtime", "experience", "bootstrap-contracts")]
+        registry.register(ArchitectureRule(rule_id, name, name, "dependency", Severity.CRITICAL, "All platform zones", lambda m, c, rs=rules: [v for r in rs for v in r.evaluate(m, c)]))
     return registry

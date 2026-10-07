@@ -28,7 +28,7 @@ Build checks syntax, architectural boundaries and importable public entry points
 
 See [architecture](docs/architecture/README.md), [repository structure](docs/architecture/repository-structure.md), [dependency rules](docs/architecture/dependency-rules.md), [module guidelines](docs/architecture/module-guidelines.md) and [contributing](CONTRIBUTING.md).
 
-The repository contains six physical source modules, five in the platform and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
+The repository contains seven physical source modules: five platform foundations, one independent hosting contract boundary and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
 
 There is no runnable web/mobile UI in ARC-01. Reference Mini Sales is reserved for the first executable vertical slice.
 
@@ -42,4 +42,18 @@ For ARC-02 before its predecessor is merged, check out `arc-02-dependency-rules`
 
 ## Architecture fitness harness
 
-See [fitness functions](docs/architecture/fitness-tests.md) for the 30-rule baseline, shared model, severity handling, temporary exceptions, negative fixtures and rule registration. Run `python3 scripts/dev.py fitness` or `fitness:json --output build/architecture-fitness.json`. Full build/architecture checks enforce fitness; filtered runs are for diagnosis. ARC-03 is in `arc-03-fitness-harness`, stacked on ARC-02 until the predecessor is merged.
+See [fitness functions](docs/architecture/fitness-tests.md) for the ARC-03 30-rule baseline (34 after ARC-04), shared model, severity handling, temporary exceptions, negative fixtures and rule registration. Run `python3 scripts/dev.py fitness` or `fitness:json --output build/architecture-fitness.json`. Full build/architecture checks enforce fitness; filtered runs are for diagnosis. ARC-03 is in `arc-03-fitness-harness`, stacked on ARC-02 until the predecessor is merged.
+
+
+## Platform bootstrap
+
+ARC-04 adds explicit composition, deterministic activation, validated configuration, lifecycle cleanup and local health. See [platform bootstrap](docs/architecture/platform-bootstrap.md).
+
+```bash
+python3 scripts/dev.py doctor
+python3 scripts/dev.py run --once
+python3 scripts/dev.py run --once --config config/test.json --format json
+python3 scripts/dev.py run # stays active until Ctrl-C or SIGTERM
+```
+
+The five running modules are boundary markers; no compiler/runtime business behavior is implied. Angular + PrimeNG, Django + DRF and database-free mock contracts remain the selected future adapter stack.

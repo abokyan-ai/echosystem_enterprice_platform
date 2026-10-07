@@ -30,3 +30,6 @@ These locations are documented future boundaries; adding them does not require r
 ## ARC-02 governance files
 
 `architecture.json` is schema v2 with zone/owner/language/public API/dependency category metadata. `architecture-policy.json` governs zone direction, stdlib capabilities and external adapter profiles. `dependency-exceptions.json` has no waivers. Dependency tooling distinguishes declared and observed edges; no platform implementation is added. Selected future adapters are Angular/PrimeNG frontend, Django/DRF HTTP and in-memory mock data without DB.
+
+
+ARC-04: see [platform bootstrap](platform-bootstrap.md). Hosting contracts live in `platform/bootstrap/contracts`; concrete composition/configuration/lifecycle lives in CLI internals. Activation dependencies are separate from architectural allowed imports. TestHost and fakes are test-only.

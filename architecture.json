@@ -14,7 +14,8 @@
         "semantic_kernel.public"
       ],
       "external_dependencies": [],
-      "dependency_categories": {}
+      "dependency_categories": {},
+      "activation_dependencies": []
     },
     {
       "name": "model-core",
@@ -32,7 +33,10 @@
       "external_dependencies": [],
       "dependency_categories": {
         "semantic-kernel": "api"
-      }
+      },
+      "activation_dependencies": [
+        "semantic-kernel"
+      ]
     },
     {
       "name": "compiled-contracts",
@@ -50,7 +54,10 @@
       "external_dependencies": [],
       "dependency_categories": {
         "semantic-kernel": "api"
-      }
+      },
+      "activation_dependencies": [
+        "semantic-kernel"
+      ]
     },
     {
       "name": "compiler-core",
@@ -72,7 +79,12 @@
         "semantic-kernel": "api",
         "model-core": "api",
         "compiled-contracts": "api"
-      }
+      },
+      "activation_dependencies": [
+        "semantic-kernel",
+        "model-core",
+        "compiled-contracts"
+      ]
     },
     {
       "name": "runtime-core",
@@ -92,7 +104,25 @@
       "dependency_categories": {
         "semantic-kernel": "api",
         "compiled-contracts": "api"
-      }
+      },
+      "activation_dependencies": [
+        "semantic-kernel",
+        "compiled-contracts"
+      ]
+    },
+    {
+      "name": "bootstrap-contracts",
+      "package": "bootstrap_contracts",
+      "path": "platform/bootstrap/contracts",
+      "zone": "bootstrap-contracts",
+      "owner": "hosting contract maintainers",
+      "language": "python",
+      "public_api": [
+        "bootstrap_contracts.public"
+      ],
+      "allowed_dependencies": [],
+      "dependency_categories": {},
+      "external_dependencies": []
     },
     {
       "name": "platform-cli",
@@ -103,7 +133,8 @@
         "model-core",
         "compiled-contracts",
         "compiler-core",
-        "runtime-core"
+        "runtime-core",
+        "bootstrap-contracts"
       ],
       "zone": "tooling",
       "owner": "tooling maintainers",
@@ -117,7 +148,8 @@
         "model-core": "development",
         "compiled-contracts": "development",
         "compiler-core": "development",
-        "runtime-core": "development"
+        "runtime-core": "development",
+        "bootstrap-contracts": "api"
       }
     }
   ]
