@@ -12,7 +12,7 @@ class DependencyCommandTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "scripts/dev.py", "dependencies:json"], cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
-        self.assertEqual(len(report["modules"]), 6)
+        self.assertEqual(len(report["modules"]), 7)
         self.assertEqual(report["violations"], [])
         self.assertEqual(report["cycle_count"], 0)
 

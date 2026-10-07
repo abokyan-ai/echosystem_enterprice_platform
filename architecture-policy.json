@@ -204,12 +204,37 @@
         "runtime",
         "experience",
         "adapter",
-        "application"
+        "application",
+        "bootstrap-contracts"
       ],
       "stdlib": [
         "*"
       ],
       "rule_id": "ARCH-DEP-010"
+    },
+    "bootstrap-contracts": {
+      "path_prefix": "platform/bootstrap/contracts",
+      "allowed_zones": [],
+      "stdlib": [
+        "__future__",
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "types",
+        "typing",
+        "uuid",
+        "warnings"
+      ],
+      "rule_id": "ARCH-BOOT-CONTRACT-001"
     }
   },
   "external_dependencies": {

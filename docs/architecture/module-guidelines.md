@@ -11,3 +11,6 @@ Extract a module into a separate process only with evidence of independent scali
 Generated code belongs outside source directories. Compatibility/migration rules accompany evolving public contracts when actual behavior exists. No semantic entities, persistence interfaces, compiler features or runtime services are created merely to populate ARC-01.
 
 ARC-02 requires exact public imports and contract-owned public types. Add static public registration imports to doctor when adding a module to its inspected registration set. Architecture checks also validate module paths, duplicate/overlapping registrations, graph cycles and external profile declarations. New TS/JS/Dart production code fails until its language analyzer and exports are registered.
+
+
+ARC-04: see [platform bootstrap](platform-bootstrap.md). Hosting contracts live in `platform/bootstrap/contracts`; concrete composition/configuration/lifecycle lives in CLI internals. Activation dependencies are separate from architectural allowed imports. TestHost and fakes are test-only.

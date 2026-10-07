@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import py_compile
+import signal
 import subprocess
 import sys
 import zipfile
@@ -14,10 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint", "dependencies", "dependencies:json", "check:architecture", "fitness", "fitness:json"])
+    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint", "dependencies", "dependencies:json", "check:architecture", "fitness", "fitness:json", "run"])
     args, fitness_options = parser.parse_known_args()
-    if fitness_options and args.command not in {"fitness", "fitness:json"}:
-        parser.error("Extra options are only supported by fitness commands")
+    if fitness_options and args.command not in {"fitness", "fitness:json", "doctor", "run"}:
+        parser.error("Extra options are supported by fitness, doctor and run commands")
     try:
         if sys.version_info < (3, 11):
             raise ValueError("Python 3.11+ is required")
@@ -25,7 +26,24 @@ def main():
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join([str(ROOT / m["path"] / "src") for m in data["modules"]] + [str(ROOT / "scripts")])
         def run(*arguments):
-            subprocess.run([sys.executable, *arguments], cwd=ROOT, env=env, check=True)
+            if args.command != "run":
+                subprocess.run([sys.executable, *arguments], cwd=ROOT, env=env, check=True)
+                return
+            process = subprocess.Popen([sys.executable, *arguments], cwd=ROOT, env=env)
+            previous = {}
+            def forward(signum, frame):
+                if process.poll() is None:
+                    process.send_signal(signum)
+            try:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    previous[sig] = signal.getsignal(sig)
+                    signal.signal(sig, forward)
+                code = process.wait()
+                if code:
+                    raise subprocess.CalledProcessError(code, process.args)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
         if args.command == "install":
             print("Ready: standard-library-only workspace; no dependencies to install")
         elif args.command in {"build", "lint"}:
@@ -64,6 +82,7 @@ def main():
             run("-m", "architecture_fitness")
             run("-m", "unittest", "discover", "-s", "tests/architecture", "-v")
         elif args.command == "test":
+            env["PYTHONPATH"] += os.pathsep + str(ROOT / "tests")
             for m in data["modules"]:
                 run("-m", "unittest", "discover", "-s", str(Path(m["path"]) / "tests"), "-v")
             for family in ("unit", "architecture", "contracts", "integration", "e2e"):
@@ -72,7 +91,7 @@ def main():
                 else:
                     print(f"Deferred test suite: {family} (no behavior implemented)")
         else:
-            run("-m", "platform_cli", "doctor", "--root", str(ROOT))
+            run("-m", "platform_cli", args.command, "--root", str(ROOT), *fitness_options)
     except (OSError, ValueError, KeyError, TypeError, py_compile.PyCompileError, subprocess.CalledProcessError) as exc:
         print(f"{args.command} failed: {exc}", file=sys.stderr)
         return 1
