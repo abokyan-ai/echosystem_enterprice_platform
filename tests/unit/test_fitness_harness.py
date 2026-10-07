@@ -180,7 +180,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")
-        self.assertEqual(report["summary"]["rules_executed"], 34)
+        self.assertEqual(report["summary"]["rules_executed"], 37)
 
     def test_existing_governance_evaluated_once_for_all_rules(self):
         from architecture_fitness.governance import evaluate_governance
@@ -188,7 +188,7 @@ class HarnessTests(unittest.TestCase):
         with patch("architecture_fitness.rules.evaluate_governance", wraps=evaluate_governance) as evaluator:
             report = execute(model, as_of=TODAY)
         self.assertEqual(evaluator.call_count, 1)
-        self.assertEqual(report["summary"]["rules_executed"], 34)
+        self.assertEqual(report["summary"]["rules_executed"], 37)
 
 
 class BootstrapFitnessTests(unittest.TestCase):
@@ -212,3 +212,24 @@ class BootstrapFitnessTests(unittest.TestCase):
         model = fixture((module("core", "runtime", ("contract",)), module("contract", "bootstrap-contracts")))
         report = execute(model, rule_ids=("ARCH-BOOT-003",))
         self.assertEqual(report["summary"]["status"], "HEALTHY")
+
+
+class CliFitnessTests(unittest.TestCase):
+    def test_core_cli_transitive_edge_fails_even_with_relaxed_policy(self):
+        policy = copy.deepcopy(POLICY)
+        policy["zones"]["runtime"]["allowed_zones"].append("tooling")
+        model = fixture((module("core", "runtime", ("middle",)), module("middle", "runtime", ("platform-cli",)), module("platform-cli", "tooling")), policy=policy)
+        report = execute(model, rule_ids=("ARCH-CLI-001",))
+        self.assertEqual(report["summary"]["status"], "FAILED")
+        self.assertTrue(any(v["dependency_path"] == ("core", "middle", "platform-cli") for v in report["violations"]))
+
+    def test_cli_cannot_import_platform_internal(self):
+        model = fixture((module("platform-cli", "tooling", ("runtime",)), module("runtime", "runtime")), (Source("tools/commands/run.py", "platform-cli", (("runtime.internal.host", 2),)),))
+        report = execute(model, rule_ids=("ARCH-CLI-002",))
+        self.assertEqual(report["summary"]["status"], "FAILED")
+
+    def test_cli_adapter_public_allowed_internal_rejected(self):
+        for target, expected in (("adapter.public", "HEALTHY"), ("adapter.internal", "FAILED")):
+            model = fixture((module("platform-cli", "tooling", ("adapter",)), module("adapter", "adapter")), (Source("tools/commands/example.py", "platform-cli", ((target, 4),)),))
+            report = execute(model, rule_ids=("ARCH-CLI-003",))
+            self.assertEqual(report["summary"]["status"], expected)

@@ -32,3 +32,6 @@ ARC-03 provides [executable architecture fitness functions](fitness-tests.md), m
 
 
 ARC-04: see [platform bootstrap](platform-bootstrap.md). Hosting contracts live in `platform/bootstrap/contracts`; concrete composition/configuration/lifecycle lives in CLI internals. Activation dependencies are separate from architectural allowed imports. TestHost and fakes are test-only.
+
+
+ARC-05: [CLI usage and extension](../developer/cli.md), [ADR-0007](decisions/ADR-0007-cli-as-thin-developer-adapter.md). CLI registration/handlers/rendering are separated; core remains independent of tooling.

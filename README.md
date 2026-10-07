@@ -57,3 +57,18 @@ python3 scripts/dev.py run # stays active until Ctrl-C or SIGTERM
 ```
 
 The five running modules are boundary markers; no compiler/runtime business behavior is implied. Angular + PrimeNG, Django + DRF and database-free mock contracts remain the selected future adapter stack.
+
+
+## Unified developer CLI
+
+ARC-05 provides `./bin/platform --help`, `version`, `doctor`, `run`, `modules` and `health`. Commands use explicit registration, public capability injection, human/JSON output and documented exit codes. See [CLI guide](docs/developer/cli.md).
+
+```bash
+./bin/platform --help
+./bin/platform doctor --output json
+./bin/platform modules --output json
+./bin/platform health --output json
+./bin/platform run --once --output json
+```
+
+Health/modules inspect a newly built local host, not another process. Full architecture fitness now enforces 37 rules.
