@@ -250,3 +250,23 @@ class DependencyTests(unittest.TestCase):
     def test_test_category_is_not_a_production_edge(self):
         self.permit("model-core", "semantic-kernel", "test")
         self.assert_rule("ARCH-DEP-011", "model-core")
+
+    def test_fitness_exception_round_trip_and_expiry_fail_cli(self):
+        self.permit("model-core", "runtime-core")
+        self.source("model-core", "from runtime_core.public import MODULE_NAME as RUNTIME\nMODULE_NAME = 'model-core'\n")
+        registry = {"schema_version": 1, "exceptions": []}
+        for index, rule_id in enumerate(("ARCH-DEP-002", "ARCH-FIT-DEP-003")):
+            registry["exceptions"].append({"id": f"fixture-waiver-{index}", "rule_id": rule_id, "source": "model-core", "target": "runtime-core", "reason": "Temporary negative fixture only", "owner": "fixture owner", "created_at": "2026-10-01", "expires_at": "2026-11-01", "review_issue": "ADR-TEST-001"})
+        path = self.root / "docs/architecture/dependency-exceptions.json"
+        path.write_text(json.dumps(registry))
+        command = [sys.executable, "scripts/dev.py", "fitness:json", "--as-of", "2026-10-07"]
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["summary"]["suppressed"], 3)
+        self.assertTrue(all(e["status"] == "applied" for e in report["exceptions"]))
+        registry["exceptions"][0]["expires_at"] = "2026-10-06"
+        path.write_text(json.dumps(registry))
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(any(v["rule_id"] == "ARCH-EXC-001" for v in json.loads(result.stdout)["violations"]))

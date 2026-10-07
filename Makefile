@@ -1,7 +1,7 @@
 PYTHON ?= python3
 
-.PHONY: install build test test-architecture doctor lint dependencies check-architecture
-install build test doctor lint dependencies:
+.PHONY: install build test test-architecture doctor lint dependencies check-architecture fitness
+install build test doctor lint dependencies fitness:
 	$(PYTHON) scripts/dev.py $@
 
 test-architecture:
