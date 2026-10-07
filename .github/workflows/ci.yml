@@ -1,4 +1,4 @@
-name: ARC-01 checks
+name: Architecture checks
 on:
   push:
   pull_request:
@@ -16,6 +16,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python scripts/dev.py install
+      - name: Enforce dependency governance
+        run: python scripts/dev.py check:architecture
+      - run: python scripts/dev.py dependencies:json
       - run: python scripts/dev.py lint
       - run: python scripts/dev.py build
       - run: python scripts/dev.py test

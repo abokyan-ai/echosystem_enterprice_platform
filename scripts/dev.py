@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint"])
+    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint", "dependencies", "dependencies:json", "check:architecture"])
     args = parser.parse_args()
     try:
         if sys.version_info < (3, 11):
@@ -30,14 +30,14 @@ def main():
             errors = check(ROOT)
             if errors:
                 raise ValueError("\n".join(errors))
-            files = sorted(p for family in ("platform", "tools", "scripts", "tests") for p in (ROOT / family).rglob("*.py"))
+            files = sorted(p for family in ("platform", "adapters", "apps", "tools", "scripts", "tests") for p in (ROOT / family).rglob("*.py"))
             for p in files:
                 py_compile.compile(str(p), cfile=str(ROOT / "build" / "bytecode" / p.relative_to(ROOT).with_suffix(".pyc")), doraise=True)
                 for number, line in enumerate(p.read_text().splitlines(), 1):
                     if line != line.rstrip() or "\t" in line:
                         raise ValueError(f"Whitespace violation: {p.relative_to(ROOT)}:{number}")
             if args.command == "build":
-                output = ROOT / "build" / "arc01-workspace.zip"
+                output = ROOT / "build" / "platform-workspace.zip"
                 with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
                     for directory, subdirs, filenames in os.walk(ROOT):
                         subdirs[:] = sorted(d for d in subdirs if d not in {".git", "build", "__pycache__", ".venv"} and not d.startswith("tmp"))
@@ -50,12 +50,18 @@ def main():
                 print(f"Build OK: syntax, boundaries, public imports; {output.relative_to(ROOT)}")
             else:
                 print("Lint OK: syntax, whitespace, architecture")
+        elif args.command in {"dependencies", "dependencies:json", "check:architecture"}:
+            options = ["--graph"] if args.command != "check:architecture" else []
+            if args.command == "dependencies:json":
+                options += ["--format", "json"]
+            run("scripts/check_architecture.py", *options)
         elif args.command == "test:architecture":
+            run("scripts/check_architecture.py")
             run("-m", "unittest", "discover", "-s", "tests/architecture", "-v")
         elif args.command == "test":
             for m in data["modules"]:
                 run("-m", "unittest", "discover", "-s", str(Path(m["path"]) / "tests"), "-v")
-            for family in ("architecture", "contracts", "integration", "e2e"):
+            for family in ("unit", "architecture", "contracts", "integration", "e2e"):
                 if any((ROOT / "tests" / family).glob("test*.py")):
                     run("-m", "unittest", "discover", "-s", f"tests/{family}", "-v")
                 else:

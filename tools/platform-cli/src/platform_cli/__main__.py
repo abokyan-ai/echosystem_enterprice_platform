@@ -1,10 +1,11 @@
 """In-process platform doctor, without compiler/runtime feature assumptions."""
 import argparse
-import importlib
 import json
 import subprocess
 import sys
 from pathlib import Path
+from platform_cli.internal.registration import REGISTERED_PLATFORM_MODULES
+from platform_cli.public import MODULE_NAME
 
 
 def main():
@@ -19,10 +20,9 @@ def main():
         root = args.root.resolve()
         data = json.loads((root / "architecture.json").read_text())
         subprocess.run([sys.executable, str(root / "scripts/check_architecture.py"), "--root", str(root)], check=True)
-        for module in data["modules"]:
-            public = importlib.import_module(module["package"] + ".public")
-            if public.MODULE_NAME != module["name"]:
-                raise ValueError(f"Module registration mismatch: {module['name']}")
+        expected = {m["name"] for m in data["modules"]}
+        if expected != REGISTERED_PLATFORM_MODULES | {MODULE_NAME}:
+            raise ValueError("Module registration mismatch: update the CLI's explicit public registration imports")
         print(f"Doctor OK: Python {sys.version.split()[0]}, configuration, {len(data['modules'])} public modules, dependency wiring")
         return 0
     except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.CalledProcessError) as exc:

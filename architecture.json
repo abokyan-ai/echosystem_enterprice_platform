@@ -1,12 +1,20 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "minimum_python": "3.11",
   "modules": [
     {
       "name": "semantic-kernel",
       "path": "platform/kernel/semantic-kernel",
       "package": "semantic_kernel",
-      "allowed_dependencies": []
+      "allowed_dependencies": [],
+      "zone": "kernel",
+      "owner": "kernel maintainers",
+      "language": "python",
+      "public_api": [
+        "semantic_kernel.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {}
     },
     {
       "name": "model-core",
@@ -14,7 +22,17 @@
       "package": "model_core",
       "allowed_dependencies": [
         "semantic-kernel"
-      ]
+      ],
+      "zone": "model",
+      "owner": "model maintainers",
+      "language": "python",
+      "public_api": [
+        "model_core.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "api"
+      }
     },
     {
       "name": "compiled-contracts",
@@ -22,7 +40,17 @@
       "package": "compiled_contracts",
       "allowed_dependencies": [
         "semantic-kernel"
-      ]
+      ],
+      "zone": "compiled-contracts",
+      "owner": "compiled-contracts maintainers",
+      "language": "python",
+      "public_api": [
+        "compiled_contracts.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "api"
+      }
     },
     {
       "name": "compiler-core",
@@ -32,7 +60,19 @@
         "semantic-kernel",
         "model-core",
         "compiled-contracts"
-      ]
+      ],
+      "zone": "compiler",
+      "owner": "compiler maintainers",
+      "language": "python",
+      "public_api": [
+        "compiler_core.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "api",
+        "model-core": "api",
+        "compiled-contracts": "api"
+      }
     },
     {
       "name": "runtime-core",
@@ -41,13 +81,44 @@
       "allowed_dependencies": [
         "semantic-kernel",
         "compiled-contracts"
-      ]
+      ],
+      "zone": "runtime",
+      "owner": "runtime maintainers",
+      "language": "python",
+      "public_api": [
+        "runtime_core.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "api",
+        "compiled-contracts": "api"
+      }
     },
     {
       "name": "platform-cli",
       "path": "tools/platform-cli",
       "package": "platform_cli",
-      "allowed_dependencies": []
+      "allowed_dependencies": [
+        "semantic-kernel",
+        "model-core",
+        "compiled-contracts",
+        "compiler-core",
+        "runtime-core"
+      ],
+      "zone": "tooling",
+      "owner": "tooling maintainers",
+      "language": "python",
+      "public_api": [
+        "platform_cli.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "development",
+        "model-core": "development",
+        "compiled-contracts": "development",
+        "compiler-core": "development",
+        "runtime-core": "development"
+      }
     }
   ]
 }
