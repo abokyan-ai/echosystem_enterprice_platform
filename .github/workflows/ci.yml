@@ -23,7 +23,11 @@ jobs:
       - run: python scripts/dev.py build
       - run: python scripts/dev.py test
       - run: python scripts/dev.py test:architecture
-      - run: python scripts/dev.py doctor
+      - run: python scripts/dev.py cli --help
+      - run: python scripts/dev.py cli --version
+      - run: python scripts/dev.py modules --output json
+      - run: python scripts/dev.py health --output json
+      - run: python scripts/dev.py doctor --output json
       - run: python scripts/dev.py run --once
       - run: python scripts/dev.py run --once --config config/test.json
       - name: Upload architecture fitness report

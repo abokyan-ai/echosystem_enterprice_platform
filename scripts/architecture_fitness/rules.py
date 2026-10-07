@@ -133,4 +133,22 @@ def default_registry():
     ):
         rules = [forbidden_path_rule(rule_id, name, zone, target) for zone in ("kernel", "model", "compiled-contracts", "compiler", "runtime", "experience", "bootstrap-contracts")]
         registry.register(ArchitectureRule(rule_id, name, name, "dependency", Severity.CRITICAL, "All platform zones", lambda m, c, rs=rules: [v for r in rs for v in r.evaluate(m, c)]))
+    cli_paths = [forbidden_path_rule("ARCH-CLI-001", "Platform core must not depend on CLI/tooling", zone, "tooling") for zone in ("kernel", "model", "compiled-contracts", "compiler", "runtime", "experience", "bootstrap-contracts")]
+    registry.register(ArchitectureRule("ARCH-CLI-001", "Core/CLI direction", "Core cannot depend on CLI/tooling", "dependency", Severity.CRITICAL, "All platform zones", lambda m, c: [v for r in cli_paths for v in r.evaluate(m, c)]))
+    def cli_public(model, context):
+        from dataclasses import replace
+        return [replace(v, rule_id="ARCH-CLI-002") for v in legacy_rule("ARCH-API-001", "CLI public imports", "public-api", Severity.CRITICAL).evaluate(model, context) if v.source == "platform-cli"]
+    registry.register(ArchitectureRule("ARCH-CLI-002", "CLI uses public contracts", "CLI cross-module imports use only public surfaces", "public-api", Severity.CRITICAL, "platform-cli", cli_public))
+    def cli_adapter(model, context):
+        adapters = {m.metadata["package"]: m for m in model.modules if m.zone == "adapter"}
+        findings = []
+        for source in model.sources:
+            if source.owner != "platform-cli":
+                continue
+            for target, line in source.targets:
+                owner = adapters.get(target.split(".")[0])
+                if owner and target not in owner.public_api:
+                    findings.append(ArchitectureViolation("ARCH-CLI-003", Severity.CRITICAL, "CLI must not import adapter internals", source.owner, owner.id, target, "Inject the adapter's public contract from the composition root.", file=source.file, line=line))
+        return findings
+    registry.register(ArchitectureRule("ARCH-CLI-003", "No CLI adapter internals", "CLI must use public adapter contracts", "public-api", Severity.CRITICAL, "platform-cli", cli_adapter))
     return registry

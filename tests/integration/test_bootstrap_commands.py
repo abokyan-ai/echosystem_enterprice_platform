@@ -15,7 +15,7 @@ class BootstrapCommandTests(unittest.TestCase):
         return subprocess.run([sys.executable, "scripts/dev.py", *options], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=20)
 
     def test_default_run_and_reverse_shutdown(self):
-        result = self.command("run", "--once", "--format", "json")
+        result = self.command("run", "--once", "--format", "json", "--verbose")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["health"]["status"], "healthy")
@@ -42,7 +42,7 @@ class BootstrapCommandTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "POSIX signal integration")
     def test_sigterm_graceful_cleanup(self):
         # Verify the development wrapper forwards termination to the actual host.
-        process = subprocess.Popen([sys.executable, "scripts/dev.py", "run", "--modules", "", "--format", "json"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen([sys.executable, "scripts/dev.py", "run", "--modules", "", "--format", "json", "--verbose"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             report = json.loads(process.stdout.readline())
             self.assertEqual(report["health"]["status"], "healthy")
