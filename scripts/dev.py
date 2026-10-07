@@ -14,8 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint", "dependencies", "dependencies:json", "check:architecture"])
-    args = parser.parse_args()
+    parser.add_argument("command", choices=["install", "build", "test", "test:architecture", "doctor", "lint", "dependencies", "dependencies:json", "check:architecture", "fitness", "fitness:json"])
+    args, fitness_options = parser.parse_known_args()
+    if fitness_options and args.command not in {"fitness", "fitness:json"}:
+        parser.error("Extra options are only supported by fitness commands")
     try:
         if sys.version_info < (3, 11):
             raise ValueError("Python 3.11+ is required")
@@ -50,13 +52,16 @@ def main():
                 print(f"Build OK: syntax, boundaries, public imports; {output.relative_to(ROOT)}")
             else:
                 print("Lint OK: syntax, whitespace, architecture")
+        elif args.command in {"fitness", "fitness:json"}:
+            options = ["--format", "json"] if args.command == "fitness:json" else []
+            run("-m", "architecture_fitness", *options, *fitness_options)
         elif args.command in {"dependencies", "dependencies:json", "check:architecture"}:
             options = ["--graph"] if args.command != "check:architecture" else []
             if args.command == "dependencies:json":
                 options += ["--format", "json"]
             run("scripts/check_architecture.py", *options)
         elif args.command == "test:architecture":
-            run("scripts/check_architecture.py")
+            run("-m", "architecture_fitness")
             run("-m", "unittest", "discover", "-s", "tests/architecture", "-v")
         elif args.command == "test":
             for m in data["modules"]:

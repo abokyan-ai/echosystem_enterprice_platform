@@ -17,10 +17,17 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python scripts/dev.py install
       - name: Enforce dependency governance
-        run: python scripts/dev.py check:architecture
+        run: python scripts/dev.py fitness:json --output build/architecture-fitness.json
       - run: python scripts/dev.py dependencies:json
       - run: python scripts/dev.py lint
       - run: python scripts/dev.py build
       - run: python scripts/dev.py test
       - run: python scripts/dev.py test:architecture
       - run: python scripts/dev.py doctor
+      - name: Upload architecture fitness report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-fitness-python-${{ matrix.python }}
+          path: build/architecture-fitness.json
+          if-no-files-found: error

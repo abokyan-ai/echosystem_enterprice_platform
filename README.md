@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-ARC-01 and ARC-02 establish a contract-driven modular monolith repository. It does **not** implement the semantic platform, compiler, runtime behavior, persistence or UI.
+ARC-01, ARC-02 and ARC-03 establish a contract-driven modular monolith repository. It does **not** implement the semantic platform, compiler, runtime behavior, persistence or UI.
 
 ## Quick start
 
@@ -39,3 +39,7 @@ ARC-02 adds registered zones/owners, exact public API checks, production/test is
 Selected future implementation stack: **Angular + PrimeNG**, **Django + Django REST Framework**, and **contract-based in-memory Mock Data without a database**. The current runnable code is Python governance/doctor tooling; UI/API/data behavior and framework installation are outside ARC-02. Unsupported TS production code fails until a TypeScript analyzer is introduced.
 
 For ARC-02 before its predecessor is merged, check out `arc-02-dependency-rules`. Its pull request is stacked on `arc-01-repository-architecture`; retarget it to main after ARC-01 is merged and revalidate CI.
+
+## Architecture fitness harness
+
+See [fitness functions](docs/architecture/fitness-tests.md) for the 30-rule baseline, shared model, severity handling, temporary exceptions, negative fixtures and rule registration. Run `python3 scripts/dev.py fitness` or `fitness:json --output build/architecture-fitness.json`. Full build/architecture checks enforce fitness; filtered runs are for diagnosis. ARC-03 is in `arc-03-fitness-harness`, stacked on ARC-02 until the predecessor is merged.

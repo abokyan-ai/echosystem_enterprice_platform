@@ -116,7 +116,7 @@ Depth-first traversal detects cycles in both the complete declared graph and the
 
 ## Exception policy
 
-`dependency-exceptions.json` is an empty central registry. There are no waivers. This baseline deliberately rejects nonempty registries rather than silently ignoring rules. A proposed exception requires rule ID, affected modules, reason, owner, date, temporary/permanent status, review/expiry condition and ADR/issue reference, plus a reviewed implementation of narrowly matched enforcement. No inline ignores or global switches. Changes to policies and exceptions require architectural code review; CI itself cannot guarantee reviewer behavior without repository protection configuration.
+`dependency-exceptions.json` is the central temporary exception registry and remains empty in this repository. ARC-03 now supports exact rule/source/target waivers with owner, reason, creation/expiry and review reference; unknown/wildcard/invalid scopes fail, applied evidence stays visible, and expiry fails. See [fitness functions](fitness-tests.md) and ADR-0005 for the executable policy. No inline or permanent broad suppressions exist. Policy/waiver changes require architecture code review; branch protection remains a separate repository setting.
 
 ## Commands and CI
 
@@ -135,3 +135,7 @@ python3 scripts/dev.py doctor
 ## Limits and future extension
 
 The active analyzer is Python AST plus manifest policy. There is **no TypeScript/Angular analyzer yet**: adding TS/JS/Dart production source currently fails closed with ARCH-REG-001 until a registered language analyzer/export policy exists. Synthetic frontend/experience fixtures prove Python-level zone/profile enforcement, not Angular compilation. Test trees and root tooling scripts are outside production module import enforcement. Reflection, computed attribute access, indirect re-exports through dynamic assignments, dynamic tooling loaders, file reads and subprocess contents cannot all be proven safe. The checker is architectural governance, not a security sandbox. Add language/dependency analyzers when real modules need them; do not introduce phantom packages now.
+
+## ARC-03 integration
+
+Discovery and evaluation now live separately behind ArchitectureModel. The ARC-02 API remains compatible; required fitness invariants also run in build/doctor/check commands. A 30-rule registry adds severity, structured results, transitive paths, reports and governed temporary exceptions. Existing ARCH-DEP IDs retain their meanings; precise new rules use ARCH-FIT-DEP IDs.
