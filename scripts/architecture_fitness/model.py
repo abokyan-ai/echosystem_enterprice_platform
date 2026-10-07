@@ -30,6 +30,7 @@ class Source:
     dynamic_calls: tuple[tuple[str, int], ...] = ()
     issue: str | None = None
     issue_kind: str | None = None
+    classes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)

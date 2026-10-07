@@ -72,3 +72,8 @@ ARC-05 provides `./bin/platform --help`, `version`, `doctor`, `run`, `modules` a
 ```
 
 Health/modules inspect a newly built local host, not another process. Full architecture fitness now enforces 37 rules.
+
+
+## Semantic Kernel identity
+
+SK-01 introduces the immutable `semantic_kernel.public.SemanticElementId`: an opaque `sem_<UUIDv4>` value with strict validation, canonical lowercase output, safe parsing and value equality/hash semantics. JSON boundaries map it explicitly to a scalar string. See [semantic identity](docs/kernel/semantic-element-id.md) and [ADR-0008](docs/architecture/decisions/ADR-0008-semantic-element-identity.md). Full fitness now enforces 40 rules; no namespace, semantic element, generator, persistence or runtime feature is introduced.

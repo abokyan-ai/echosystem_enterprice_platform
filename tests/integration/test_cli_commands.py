@@ -15,7 +15,7 @@ class CliIntegrationTests(unittest.TestCase):
     def invoke(self, *arguments, cwd=None, env=None):
         environment = {k: v for k, v in os.environ.items() if not k.startswith("PLATFORM_")}
         environment.update(env or {})
-        return subprocess.run([sys.executable, str(ROOT / "scripts/platform.py"), *arguments], cwd=cwd or ROOT, env=environment, text=True, capture_output=True, timeout=20)
+        return subprocess.run([sys.executable, str(ROOT / "scripts/platform_cli_launcher.py"), *arguments], cwd=cwd or ROOT, env=environment, text=True, capture_output=True, timeout=20)
 
     def test_help_and_version_executable(self):
         result = subprocess.run([str(ROOT / "bin/platform"), "--help"], cwd=ROOT, text=True, capture_output=True, timeout=20)
@@ -86,7 +86,7 @@ class CliIntegrationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX signal integration")
     def test_sigint_direct_launcher_clean_shutdown(self):
-        process = subprocess.Popen([sys.executable, str(ROOT / "scripts/platform.py"), "run", "--modules", "", "--output", "json"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen([sys.executable, str(ROOT / "scripts/platform_cli_launcher.py"), "run", "--modules", "", "--output", "json"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             report = json.loads(process.stdout.readline())
             self.assertEqual(report["health"]["status"], "healthy")
@@ -98,3 +98,15 @@ class CliIntegrationTests(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+
+
+    def test_source_launcher_protects_standard_library_imports(self):
+        from unittest.mock import patch
+        import runpy
+        with patch("os.execve") as execute, patch("sys.argv", ["platform", "--version"]):
+            with self.assertRaises(SystemExit):
+                runpy.run_path(str(ROOT / "scripts/platform_cli_launcher.py"), run_name="__main__")
+        environment = execute.call_args.args[2]
+        result = subprocess.run([sys.executable, "-c", "import platform, uuid; assert callable(platform.system); print(uuid.uuid4().version)"], cwd=ROOT, env=environment, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "4")

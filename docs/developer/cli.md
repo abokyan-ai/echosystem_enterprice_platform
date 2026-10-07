@@ -9,7 +9,7 @@ Python 3.11+ is required. No third-party dependency installation is needed. From
 ```bash
 python3 scripts/dev.py install
 ./bin/platform --help
-python3 scripts/platform.py --version
+python3 scripts/platform_cli_launcher.py --version
 python3 scripts/dev.py cli modules --output json
 ```
 
@@ -20,7 +20,7 @@ export PATH="$PWD/bin:$PATH"
 platform --help
 ```
 
-The source launcher replaces its process with `python -m platform_cli`, supplying registered source paths from the checkout. It preserves signals and exit codes. On systems without POSIX executable handling use `python scripts/platform.py`. Root `dev.py doctor/run/modules/health/version` are compatibility aliases; `dev.py cli` forwards arbitrary CLI arguments. Individual source modules do not change sys.path.
+The source launcher replaces its process with `python -m platform_cli`, supplying registered source paths from the checkout. It preserves signals and exit codes. On systems without POSIX executable handling use `python scripts/platform_cli_launcher.py`. Root `dev.py doctor/run/modules/health/version` are compatibility aliases; `dev.py cli` forwards arbitrary CLI arguments. Individual source modules do not change sys.path.
 
 CLI version **0.1.0** is introduced explicitly for this CLI skeleton. No platform product version or commit identifier is fabricated.
 

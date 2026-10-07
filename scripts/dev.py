@@ -5,6 +5,7 @@ import os
 import py_compile
 import subprocess
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path
 from check_architecture import check, load_manifest
@@ -23,10 +24,10 @@ def main():
             raise ValueError("Python 3.11+ is required")
         if args.command in {"cli", "doctor", "run", "modules", "health", "version"}:
             arguments = ([] if args.command == "cli" else [args.command]) + fitness_options
-            os.execve(sys.executable, [sys.executable, str(ROOT / "scripts/platform.py"), *arguments], os.environ.copy())
+            os.execve(sys.executable, [sys.executable, str(ROOT / "scripts/platform_cli_launcher.py"), *arguments], os.environ.copy())
         data = load_manifest(ROOT)
         env = os.environ.copy()
-        env["PYTHONPATH"] = os.pathsep.join([str(ROOT / m["path"] / "src") for m in data["modules"]] + [str(ROOT / "scripts")])
+        env["PYTHONPATH"] = os.pathsep.join([sysconfig.get_path("stdlib")] + [str(ROOT / m["path"] / "src") for m in data["modules"]] + [str(ROOT / "scripts")])
         def run(*arguments):
             subprocess.run([sys.executable, *arguments], cwd=ROOT, env=env, check=True)
         if args.command == "install":
