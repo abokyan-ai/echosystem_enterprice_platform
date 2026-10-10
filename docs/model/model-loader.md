@@ -2,6 +2,10 @@
 
 Implementation date: 2026-10-10. Behavioral status: **DEFERRED / NOT VERIFIED**.
 
+## Current continuation
+
+[MOD-03](source-location-tracking.md) additively extends SourcePosition with offsets, decoded/loaded results with immutable location indexes and diagnostics with primary/related spans. JSON schema/key spans and reliable missing-property parent locations are now available through that continuation; the MOD-02-only limitations below describe its original implementation baseline. Existing constructors and safety policies remain compatible.
+
 ## Assessment and ownership
 
 MOD-01 accepts already decoded plain dict/list trees and projects them into immutable AuthoringModelDocument values. Its AuthoringSchemaValidator.validate API is the sole structural authority; MOD-02 supplies source text, format decoding and source associations. No candidate cast or second authoring schema is needed. Original schema diagnostic codes, cause codes, paths and related paths remain nested in loader diagnostics.

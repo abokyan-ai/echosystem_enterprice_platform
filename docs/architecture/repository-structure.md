@@ -4,7 +4,7 @@
 | --- | --- |
 | `platform/kernel/semantic-kernel` | Implemented identity/name/context/version/reference/primitive/facet vocabulary; general SK-11 diagnostics remain open |
 | `platform/model/model-core` | Current field/data/constraint/reference/validation/registry contracts; full TYPE-01 remains open |
-| `tools/model-loader` | MOD-02 explicit memory/file source acquisition, strict JSON/YAML decoding, source traceability and ordered load results; tooling dependency only on model-authoring |
+| `tools/model-loader` | MOD-02 explicit acquisition/JSON/YAML decoding and MOD-03 immutable source span/index/diagnostic tracking; tooling dependency only on model-authoring |
 | `platform/model/model-authoring` | MOD-01 schema projection and structural validation; depends only on Kernel/model-core, not compiler/runtime |
 | `platform/contracts/compiled-contracts` | Independent compiled artifact/semantic IR boundary; no schema implementation yet |
 | `platform/compiler/compiler-core` | Future resolution, validation and artifact construction |

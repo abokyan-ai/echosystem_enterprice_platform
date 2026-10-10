@@ -24,3 +24,7 @@ Implementation adapts conceptual TypeScript to existing Python analyzer/contract
 Configured byte/depth/node bounds mitigate practical parser exposure. Injected adapters are trusted code and unexpected programming failures propagate; successful returned trees still receive compatibility/limit checks. File symlinks to regular files are allowed; caller owns path authorization. Future parser/format providers and unified diagnostics need explicit decisions. All example loading, snapshot equivalence, semantic-side-effect and robustness scenarios remain unverified.
 
 See [loading contract](../../docs/model/model-loader.md) and [ADR-0024](../../docs/architecture/decisions/ADR-0024-model-source-loading-boundary.md). Stop at MOD-02; no subsequent stage implemented.
+
+## Subsequent MOD-03 compatibility note (2026-10-10)
+
+MOD-03 adds reliable physical spans/indexes and related locations without executing or deleting any of these archived cases. JSON schema/duplicate-key locations and YAML missing-property containing-object spans now have new expectations at the MOD-03 revision, documented in its [single detailed specification](../MOD-03/MOD-03-deferred-tests.md). Preserve these MOD-02 baseline cases/statuses and record which source/archive revision future execution targets. No prior results are reclassified.

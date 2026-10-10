@@ -1,7 +1,10 @@
 """MOD-02 loading contracts. No semantic resolution, registration or execution."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from typing import Callable, Mapping, Protocol
+from types import MappingProxyType
+from bisect import bisect_right
+from hashlib import sha256
 from model_authoring.public import (
     AuthoringModelDocument, AuthoringSchemaPath, AuthoringSchemaDiagnostic,
     AuthoringSchemaValidator,
@@ -9,6 +12,8 @@ from model_authoring.public import (
 
 MODULE_NAME = 'model-loader'
 __all__ = [
+    'SourceSpan', 'SourceLocation', 'SourceNodePath', 'SourceNodeKind',
+    'SourceLocationEntry', 'SourceLocationIndex', 'SourceLocationTracker',
     'MODULE_NAME', 'ModelSourceId', 'ModelSourceFormat', 'InMemoryModelSource',
     'FileModelSource', 'ModelSource', 'ModelSourceInformation', 'ModelLoadOptions',
     'ModelSourceProvider', 'InMemorySourceProvider', 'LocalFileSourceProvider',
@@ -104,13 +109,183 @@ class ModelLoadOptions:
 
 @dataclass(frozen=True, slots=True)
 class SourcePosition:
-    """One-based Unicode character line/column; no invented schema positions."""
+    """One-based native-parser line/column; optional zero-based Unicode character offset."""
     line: int
     column: int
+    offset: int | None = None
 
     def __post_init__(self):
         if any(type(v) is not int or v < 1 for v in (self.line, self.column)):
             raise ValueError('Positions require positive one-based coordinates.')
+        if self.offset is not None and (type(self.offset) is not int or self.offset < 0):
+            raise ValueError('Offsets require nonnegative Python Unicode character indexes.')
+        if self.offset is not None and self.offset < self.line + self.column - 2:
+            raise ValueError('Offset cannot precede the minimum coordinate character count.')
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSpan:
+    """Half-open [start,end); optional offsets count Python Unicode characters."""
+    start: SourcePosition
+    end: SourcePosition
+
+    def __post_init__(self) -> None:
+        if type(self.start) is not SourcePosition or type(self.end) is not SourcePosition:
+            raise TypeError('Span endpoints require canonical SourcePosition values.')
+        a, b = (self.start.line, self.start.column), (self.end.line, self.end.column)
+        if a > b:
+            raise ValueError('Source span coordinates are reversed.')
+        if self.start.offset is not None and self.end.offset is not None:
+            if self.start.offset > self.end.offset or (a == b) != (self.start.offset == self.end.offset):
+                raise ValueError('Span offsets and line/column ordering must agree.')
+            if self.start.line == self.end.line and self.end.offset - self.start.offset != self.end.column - self.start.column:
+                raise ValueError('Same-line offset and column distances must agree.')
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocation:
+    source_id: ModelSourceId
+    span: SourceSpan
+
+    def __post_init__(self) -> None:
+        if type(self.source_id) is not ModelSourceId or type(self.span) is not SourceSpan:
+            raise TypeError('Locations require the existing source identity and immutable span.')
+
+
+@dataclass(frozen=True, slots=True)
+class SourceNodePath:
+    """RFC 6901-style pointer tokens: empty tuple is root; / is empty property."""
+    tokens: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.tokens) not in (list, tuple) or any(type(t) is not str or any(0xD800 <= ord(c) <= 0xDFFF for c in t) for t in self.tokens):
+            raise TypeError('Node paths require an ordered sequence of Unicode string tokens.')
+        object.__setattr__(self, 'tokens', tuple(self.tokens))
+
+    @classmethod
+    def parse(cls, pointer: str) -> 'SourceNodePath':
+        if type(pointer) is not str or pointer and not pointer.startswith('/'):
+            raise ValueError('Node pointer must be empty root or start with /.')
+        if not pointer:
+            return cls()
+        tokens = []
+        for token in pointer[1:].split('/'):
+            i = 0
+            while i < len(token):
+                if token[i] == '~':
+                    if i + 1 == len(token) or token[i + 1] not in '01':
+                        raise ValueError('Pointer escapes are only ~0 and ~1.')
+                    i += 1
+                i += 1
+            tokens.append(token.replace('~1', '/').replace('~0', '~'))
+        return cls(tuple(tokens))
+
+    @classmethod
+    def from_authoring_path(cls, path: AuthoringSchemaPath) -> 'SourceNodePath':
+        if type(path) is not AuthoringSchemaPath:
+            raise TypeError('Path conversion requires the existing MOD-01 coordinate.')
+        return cls(tuple(str(t) for t in path.segments))
+
+    @property
+    def pointer(self) -> str:
+        return ''.join('/' + t.replace('~', '~0').replace('/', '~1') for t in self.tokens)
+
+    @property
+    def parent(self) -> 'SourceNodePath | None':
+        return SourceNodePath(self.tokens[:-1]) if self.tokens else None
+
+
+class SourceNodeKind(str, Enum):
+    OBJECT = 'object'
+    ARRAY = 'array'
+    SCALAR = 'scalar'
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocationEntry:
+    path: SourceNodePath
+    location: SourceLocation
+    kind: SourceNodeKind
+    key_location: SourceLocation | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.path) is not SourceNodePath or type(self.location) is not SourceLocation or type(self.kind) is not SourceNodeKind:
+            raise TypeError('Index entries require typed node paths, locations and kinds.')
+        if self.key_location is not None and (type(self.key_location) is not SourceLocation or self.key_location.source_id != self.location.source_id or not self.path.tokens):
+            raise ValueError('Property key location requires a non-root node in the same source.')
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocationIndex:
+    source_id: ModelSourceId
+    entries: tuple[SourceLocationEntry, ...] = ()
+    source_digest: str | None = None
+    _by_path: Mapping[SourceNodePath, SourceLocationEntry] = field(init=False, repr=False, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        if type(self.source_id) is not ModelSourceId or type(self.entries) not in (list, tuple):
+            raise TypeError('Indexes require a source identity and ordered entry sequence.')
+        if self.source_digest is not None and (type(self.source_digest) is not str or len(self.source_digest) != 64 or any(c not in '0123456789abcdef' for c in self.source_digest)):
+            raise ValueError('Source digest must be lowercase SHA-256 hex or absent.')
+        owned = {}
+        for entry in self.entries:
+            if type(entry) is not SourceLocationEntry or entry.location.source_id != self.source_id:
+                raise ValueError('Every indexed entry must belong to this source snapshot.')
+            if entry.path in owned and owned[entry.path] != entry:
+                raise ValueError('Conflicting registration for a source node path.')
+            owned[entry.path] = entry
+        for entry in owned.values():
+            parent = owned.get(entry.path.parent)
+            if entry.key_location is not None and parent is not None and parent.kind is not SourceNodeKind.OBJECT:
+                raise ValueError('A property key cannot be attached to an array/scalar child.')
+        entries = tuple(sorted(owned.values(), key=lambda e: e.path.pointer))
+        object.__setattr__(self, 'entries', entries)
+        object.__setattr__(self, '_by_path', MappingProxyType(owned))
+
+    def entry(self, path: SourceNodePath) -> SourceLocationEntry | None:
+        if type(path) is not SourceNodePath:
+            raise TypeError('Location lookup requires a SourceNodePath.')
+        return self._by_path.get(path)
+
+    def find(self, path: SourceNodePath) -> SourceLocation | None:
+        entry = self.entry(path)
+        return None if entry is None else entry.location
+
+    def find_key(self, path: SourceNodePath) -> SourceLocation | None:
+        entry = self.entry(path)
+        return None if entry is None else entry.key_location
+
+    def contains(self, path: SourceNodePath) -> bool:
+        return self.entry(path) is not None
+
+    def list_locations(self) -> tuple[SourceLocationEntry, ...]:
+        return self.entries
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocationTracker:
+    """Consumes reliable parser metadata; performs no parsing or semantic judgment."""
+    def build(self, source_id: ModelSourceId, entries: tuple[SourceLocationEntry, ...], *, source_text: str | None = None) -> SourceLocationIndex:
+        if source_text is not None and type(source_text) is not str:
+            raise TypeError('Snapshot digest requires original Unicode source text.')
+        digest = None if source_text is None else sha256(source_text.encode('utf-8')).hexdigest()
+        return SourceLocationIndex(source_id, entries, digest)
+
+    def locate(self, index: SourceLocationIndex | None, path: SourceNodePath, *, containing: bool = False, key: bool = False) -> SourceLocation | None:
+        if type(path) is not SourceNodePath or index is not None and type(index) is not SourceLocationIndex:
+            raise TypeError('Tracking requires an optional index and typed path.')
+        if index is None:
+            return None
+        result = index.find_key(path) if key else index.find(path)
+        if result is not None or not containing:
+            return result
+        parent = path.parent
+        while parent is not None:
+            entry = index.entry(parent)
+            if entry is not None and entry.kind in (SourceNodeKind.OBJECT, SourceNodeKind.ARRAY):
+                return entry.location
+            parent = parent.parent
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +298,8 @@ class ModelLoadDiagnostic:
     position: SourcePosition | None = None
     schema_diagnostic: AuthoringSchemaDiagnostic | None = None
     related_input_index: int | None = None
+    source_location: SourceLocation | None = None
+    related_locations: tuple[SourceLocation, ...] = ()
 
     def __post_init__(self):
         if type(self.source) is not ModelSourceInformation or type(self.stage) is not ModelLoadStage or self.code not in {f'MOD-LOAD-{i:03}' for i in range(1, 15)} or type(self.message) is not str or not self.message:
@@ -135,6 +312,18 @@ class ModelLoadDiagnostic:
             raise TypeError('Schema failures require the original structural diagnostic.')
         if self.related_input_index is not None and (type(self.related_input_index) is not int or self.related_input_index < 0):
             raise ValueError('Related batch index must be nonnegative.')
+        if self.source_location is not None:
+            if type(self.source_location) is not SourceLocation or self.source_location.source_id != self.source.source_id:
+                raise ValueError('Diagnostic location must belong to its explicit source.')
+            start = self.source_location.span.start
+            if self.position is None:
+                object.__setattr__(self, 'position', start)
+            elif (self.position.line, self.position.column) != (start.line, start.column) or self.position.offset is not None and start.offset is not None and self.position.offset != start.offset:
+                raise ValueError('Legacy diagnostic position and physical span start must agree.')
+        if type(self.related_locations) not in (list, tuple) or any(type(loc) is not SourceLocation for loc in self.related_locations):
+            raise TypeError('Related locations require immutable source locations.')
+        object.__setattr__(self, 'related_locations', tuple(self.related_locations))
+
 
     @property
     def severity(self) -> str:
@@ -187,6 +376,7 @@ class SourceDecodeResult:
     value: object | None
     diagnostics: tuple[ModelLoadDiagnostic, ...] = ()
     positions: tuple[tuple[AuthoringSchemaPath, SourcePosition], ...] = ()
+    locations: SourceLocationIndex | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'diagnostics', _diagnostics(self.diagnostics))
@@ -195,6 +385,13 @@ class SourceDecodeResult:
             raise ValueError('Decoding results require either a candidate or associated diagnostics.')
         if any(type(p) is not tuple or len(p) != 2 or type(p[0]) is not AuthoringSchemaPath or type(p[1]) is not SourcePosition for p in self.positions):
             raise TypeError('Decoder positions require immutable path/coordinate pairs.')
+        if self.locations is not None and (type(self.locations) is not SourceLocationIndex or self.locations.source_id != self.source.source_id):
+            raise ValueError('Decoder index must belong to its source snapshot.')
+        if self.locations is not None:
+            for path, position in self.positions:
+                location = self.locations.find(SourceNodePath.from_authoring_path(path))
+                if location is not None and ((position.line, position.column) != (location.span.start.line, location.span.start.column) or position.offset is not None and location.span.start.offset is not None and position.offset != location.span.start.offset):
+                    raise ValueError('Legacy decoder positions and indexed span starts must agree.')
 
 
 class ModelDecoder(Protocol):
@@ -217,10 +414,13 @@ class YamlModelDecoder:
 class LoadedAuthoringDocument:
     source: ModelSourceInformation
     document: AuthoringModelDocument
+    locations: SourceLocationIndex | None = None
 
     def __post_init__(self):
         if type(self.source) is not ModelSourceInformation or type(self.document) is not AuthoringModelDocument:
             raise TypeError('Loaded snapshots require explicit source metadata and MOD-01 authoring contracts.')
+        if self.locations is not None and (type(self.locations) is not SourceLocationIndex or self.locations.source_id != self.source.source_id):
+            raise ValueError('Loaded locations must belong to the same authoring source snapshot.')
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +511,8 @@ class ModelLoader:
         decoded = decoder.decode(bounded, self.options)
         if type(decoded) is not SourceDecodeResult or decoded.source != info:
             raise TypeError('Decoder violated its result/association contract.')
+        if decoded.locations is not None and decoded.locations.source_digest is not None and decoded.locations.source_digest != sha256(bounded.content.encode('utf-8')).hexdigest():
+            raise TypeError('Decoder index belongs to a different source-content snapshot.')
         if decoded.diagnostics:
             return ModelLoadResult(info, None, decoded.diagnostics)
         tree_error = inspect_tree(decoded.value, self.options)
@@ -319,9 +521,9 @@ class ModelLoader:
         validated = AuthoringSchemaValidator().validate(decoded.value)
         if not validated.is_valid:
             positions = dict(decoded.positions)
-            diagnostics = tuple(ModelLoadDiagnostic(info, ModelLoadStage.SCHEMA, 'MOD-LOAD-010', d.message, positions.get(d.path), d) for d in validated.diagnostics)
+            diagnostics = tuple(_schema_diagnostic(info, d, decoded.locations, positions) for d in validated.diagnostics)
             return ModelLoadResult(info, None, diagnostics)
-        return ModelLoadResult(info, LoadedAuthoringDocument(info, validated.document))
+        return ModelLoadResult(info, LoadedAuthoringDocument(info, validated.document, decoded.locations))
 
     def load_many(self, sources: tuple[ModelSource, ...]) -> ModelLoadBatchResult:
         if type(sources) not in (list, tuple) or any(type(s) not in (InMemoryModelSource, FileModelSource) for s in sources):
@@ -400,13 +602,142 @@ from contextlib import closing
 
 
 class DecodeFailure(ValueError):
-    def __init__(self, code, message, position=None):
+    def __init__(self, code: str, message: str, position: SourcePosition | None = None, location: SourceLocation | None = None, related: tuple[SourceLocation, ...] = ()) -> None:
         super().__init__(message)
         self.code, self.message, self.position = code, message, position
+        self.location, self.related = location, related
 
 
-def failed(content, code, message, position=None):
-    return SourceDecodeResult(content.source, None, (ModelLoadDiagnostic(content.source, ModelLoadStage.DECODING, code, message, position),))
+def failed(content: SourceContentResult, code: str, message: str, position: SourcePosition | None = None, *, location: SourceLocation | None = None, related: tuple[SourceLocation, ...] = ()) -> SourceDecodeResult:
+    diagnostic = ModelLoadDiagnostic(content.source, ModelLoadStage.DECODING, code, message, position, source_location=location, related_locations=related)
+    return SourceDecodeResult(content.source, None, (diagnostic,))
+
+
+def _schema_diagnostic(info: ModelSourceInformation, diagnostic: AuthoringSchemaDiagnostic, index: SourceLocationIndex | None, legacy: Mapping[AuthoringSchemaPath, SourcePosition]) -> ModelLoadDiagnostic:
+    tracker = SourceLocationTracker()
+    path = SourceNodePath.from_authoring_path(diagnostic.path)
+    location = tracker.locate(index, path, containing=diagnostic.code == 'MOD-SCHEMA-002', key=diagnostic.code == 'MOD-SCHEMA-003')
+    related = ()
+    if diagnostic.related_path is not None:
+        original = tracker.locate(index, SourceNodePath.from_authoring_path(diagnostic.related_path))
+        if original is not None:
+            related = (original,)
+    return ModelLoadDiagnostic(info, ModelLoadStage.SCHEMA, 'MOD-LOAD-010', diagnostic.message, None if location is not None else legacy.get(diagnostic.path), diagnostic, source_location=location, related_locations=related)
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonNode:
+    start: int
+    end: int
+    children: tuple['_JsonNode', ...] = ()
+    keys: tuple[tuple[str, int, int], ...] = ()
+
+
+@dataclass(slots=True)
+class _JsonFrame:
+    children: list[_JsonNode] = field(default_factory=list)
+    keys: tuple[tuple[str, int, int], ...] = ()
+
+
+class _JsonLocationAdapter:
+    """Instrument stdlib parsing callbacks, not a second JSON grammar/parser.
+
+    Value boundaries come from scanner returns; key boundaries come from stdlib
+    scanstring at already parsed member coordinates. No matching-string search.
+    """
+    def __init__(self, source_id: ModelSourceId, text: str, options: ModelLoadOptions) -> None:
+        self.source_id, self.text, self.options = source_id, text, options
+        self.node_count = 0
+        self.line_starts = (0, *(i + 1 for i, c in enumerate(text) if c == '\n'))
+        self.frames: list[_JsonFrame] = []
+        self.root: _JsonNode | None = None
+        self.decoder = json.JSONDecoder(parse_constant=reject_constant)
+        self.decoder.parse_object = self._object
+        self.decoder.parse_array = self._array
+        scanner = json.scanner.py_make_scanner(self.decoder)
+        self.decoder.scan_once = lambda text, start: self._scan(scanner, text, start)
+
+    def position(self, offset: int) -> SourcePosition:
+        line = bisect_right(self.line_starts, offset)
+        return SourcePosition(line, offset - self.line_starts[line - 1] + 1, offset)
+
+    def location(self, start: int, end: int) -> SourceLocation:
+        return SourceLocation(self.source_id, SourceSpan(self.position(start), self.position(end)))
+
+    def _scan(self, scanner: Callable[[str, int], tuple[object, int]], text: str, start: int) -> tuple[object, int]:
+        self.node_count += 1
+        if self.node_count > self.options.max_nodes:
+            raise DecodeFailure('MOD-LOAD-014', 'JSON parser node limit exceeded.', location=self.location(start, start))
+        frame = _JsonFrame()
+        self.frames.append(frame)
+        try:
+            value, end = scanner(text, start)
+        finally:
+            self.frames.pop()
+        node = _JsonNode(start, end, tuple(frame.children), frame.keys)
+        if self.frames:
+            self.frames[-1].children.append(node)
+        else:
+            self.root = node
+        return value, end
+
+    def _object(self, source: tuple[str, int], strict: bool, scanner: Callable[[str, int], tuple[object, int]], object_hook: object, object_pairs_hook: object, memo: dict[str, str] | None = None) -> tuple[object, int]:
+        text, start = source
+        frame = self.frames[-1]
+
+        def pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+            cursor = start
+            keys = []
+            result = {}
+            first = {}
+            for i, (key, value) in enumerate(values):
+                if i:
+                    cursor = json.decoder.WHITESPACE.match(text, frame.children[i - 1].end).end() + 1
+                cursor = json.decoder.WHITESPACE.match(text, cursor).end()
+                _, end = json.decoder.scanstring(text, cursor + 1, strict)
+                key_location = self.location(cursor, end)
+                self.node_count += 1
+                if self.node_count > self.options.max_nodes:
+                    raise DecodeFailure('MOD-LOAD-014', 'JSON parser key/node limit exceeded.', location=key_location)
+                if any(0xD800 <= ord(c) <= 0xDFFF for c in key):
+                    raise DecodeFailure('MOD-LOAD-008', 'JSON property key contains invalid Unicode scalar values.', location=key_location)
+                if key in result:
+                    raise DecodeFailure('MOD-LOAD-006', 'Duplicate JSON object key is unsupported.', location=key_location, related=(first[key],))
+                keys.append((key, cursor, end))
+                result[key], first[key] = value, key_location
+            frame.keys = tuple(keys)
+            return result
+
+        return json.decoder.JSONObject(source, strict, lambda text, offset: self._scan(scanner, text, offset), object_hook, pairs, memo)
+
+    def _array(self, source: tuple[str, int], scanner: Callable[[str, int], tuple[object, int]]) -> tuple[object, int]:
+        return json.decoder.JSONArray(source, lambda text, offset: self._scan(scanner, text, offset))
+
+    def decode(self) -> tuple[object, SourceLocationIndex, tuple[tuple[AuthoringSchemaPath, SourcePosition], ...]]:
+        value = self.decoder.decode(self.text)
+        entries: list[SourceLocationEntry] = []
+        positions: list[tuple[AuthoringSchemaPath, SourcePosition]] = []
+
+        def visit(item: object, node: _JsonNode, path: tuple[str | int, ...], key_location: SourceLocation | None = None) -> None:
+            location = self.location(node.start, node.end)
+            if type(item) is str and any(0xD800 <= ord(c) <= 0xDFFF for c in item):
+                raise DecodeFailure('MOD-LOAD-013', 'JSON string contains invalid Unicode scalar values.', location=location)
+            if type(item) is float and not math.isfinite(item):
+                raise DecodeFailure('MOD-LOAD-008', 'Non-finite JSON numbers are unsupported.', location=location)
+            kind = SourceNodeKind.OBJECT if type(item) is dict else SourceNodeKind.ARRAY if type(item) is list else SourceNodeKind.SCALAR
+            entries.append(SourceLocationEntry(SourceNodePath(tuple(str(t) for t in path)), location, kind, key_location))
+            positions.append((AuthoringSchemaPath(path), location.span.start))
+            if type(item) is dict:
+                for (key, start, end), child in zip(node.keys, node.children):
+                    visit(item[key], child, (*path, key), self.location(start, end))
+            elif type(item) is list:
+                for i, child in enumerate(node.children):
+                    visit(item[i], child, (*path, i))
+
+        if self.root is None:
+            raise RuntimeError('JSON parser returned no source root metadata.')
+        visit(value, self.root, ())
+        return value, SourceLocationTracker().build(self.source_id, tuple(entries), source_text=self.text), tuple(positions)
 
 
 def inspect_tree(value, options):
@@ -479,25 +810,27 @@ def reject_constant(value):
     raise DecodeFailure('MOD-LOAD-008', 'Non-standard JSON numeric constants are unsupported.')
 
 
-def decode_json(content, options):
+def decode_json(content: SourceContentResult, options: ModelLoadOptions) -> SourceDecodeResult:
     if content.diagnostics:
         return SourceDecodeResult(content.source, None, content.diagnostics)
+    adapter = _JsonLocationAdapter(content.source.source_id, content.content, options)
     try:
         json_depth(content.content, options)
-        value = json.loads(content.content, object_pairs_hook=unique_pairs, parse_constant=reject_constant)
+        value, index, positions = adapter.decode()
         error = inspect_tree(value, options)
         if error:
-            return failed(content, *error)
-        return SourceDecodeResult(content.source, value)
+            return failed(content, *error, location=index.find(SourceNodePath()))
+        return SourceDecodeResult(content.source, value, positions=positions, locations=index)
     except json.JSONDecodeError as exc:
-        return failed(content, 'MOD-LOAD-005', 'Malformed strict JSON: ' + exc.msg, SourcePosition(exc.lineno, exc.colno))
+        location = adapter.location(exc.pos, exc.pos)
+        return failed(content, 'MOD-LOAD-005', 'Malformed strict JSON: ' + exc.msg, location=location)
     except DecodeFailure as exc:
-        return failed(content, exc.code, exc.message, exc.position)
+        return failed(content, exc.code, exc.message, exc.position, location=exc.location, related=exc.related)
     except (ValueError, RecursionError, OverflowError):
         return failed(content, 'MOD-LOAD-014', 'JSON numeric or parser resource limits were exceeded.')
 
 
-def decode_yaml(content, options):
+def decode_yaml(content: SourceContentResult, options: ModelLoadOptions) -> SourceDecodeResult:
     if content.diagnostics:
         return SourceDecodeResult(content.source, None, content.diagnostics)
     # Lazy parser import: neutral contracts/JSON/memory acquisition work without YAML.
@@ -510,60 +843,83 @@ def decode_yaml(content, options):
         depth = nodes = documents = 0
         with closing(yaml.parse(content.content, Loader=yaml.SafeLoader)) as events:
             for event in events:
-                position = SourcePosition(event.start_mark.line + 1, event.start_mark.column + 1)
+                position = SourcePosition(event.start_mark.line + 1, event.start_mark.column + 1, event.start_mark.index)
+                event_end = SourcePosition(event.end_mark.line + 1, event.end_mark.column + 1, event.end_mark.index)
+                event_location = SourceLocation(content.source.source_id, SourceSpan(position, event_end))
                 if isinstance(event, yaml.events.DocumentStartEvent):
                     documents += 1
                     if documents > 1:
-                        raise DecodeFailure('MOD-LOAD-007', 'Only one YAML document is allowed per source.', position)
+                        raise DecodeFailure('MOD-LOAD-007', 'Only one YAML document is allowed per source.', location=event_location)
                     if event.version not in (None, (1, 1)) or event.tags:
-                        raise DecodeFailure('MOD-LOAD-008', 'Only YAML 1.1 without tag directives is supported.', position)
+                        raise DecodeFailure('MOD-LOAD-008', 'Only YAML 1.1 without tag directives is supported.', location=event_location)
                 if isinstance(event, yaml.events.AliasEvent) or getattr(event, 'anchor', None) is not None or getattr(event, 'tag', None) is not None:
-                    raise DecodeFailure('MOD-LOAD-008', 'YAML aliases, anchors and explicit tags are unsupported.', position)
+                    raise DecodeFailure('MOD-LOAD-008', 'YAML aliases, anchors and explicit tags are unsupported.', location=event_location)
                 if isinstance(event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent, yaml.events.ScalarEvent)):
                     nodes += 1
                     if nodes > options.max_nodes:
-                        raise DecodeFailure('MOD-LOAD-014', 'YAML node limit exceeded.', position)
+                        raise DecodeFailure('MOD-LOAD-014', 'YAML node limit exceeded.', location=event_location)
                     if isinstance(event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent)):
                         depth += 1
                     if depth > options.max_depth:
-                        raise DecodeFailure('MOD-LOAD-014', 'YAML nesting limit exceeded.', position)
+                        raise DecodeFailure('MOD-LOAD-014', 'YAML nesting limit exceeded.', location=event_location)
                 elif isinstance(event, (yaml.events.MappingEndEvent, yaml.events.SequenceEndEvent)):
                     depth -= 1
         loader = yaml.SafeLoader(content.content)
         root = loader.get_single_node()
-        positions = []
+        positions: list[tuple[AuthoringSchemaPath, SourcePosition]] = []
+        entries: list[SourceLocationEntry] = []
 
-        def project(node, path):
-            position = SourcePosition(node.start_mark.line + 1, node.start_mark.column + 1)
+        def mark_position(mark) -> SourcePosition:
+            return SourcePosition(mark.line + 1, mark.column + 1, mark.index)
+
+        def node_location(node) -> SourceLocation:
+            return SourceLocation(content.source.source_id, SourceSpan(mark_position(node.start_mark), mark_position(node.end_mark)))
+
+        def project(node, path: tuple[str | int, ...], key_location: SourceLocation | None = None) -> object:
+            location = node_location(node)
+            position = location.span.start
             positions.append((AuthoringSchemaPath(path), position))
+            kind = SourceNodeKind.OBJECT if isinstance(node, yaml.nodes.MappingNode) else SourceNodeKind.ARRAY if isinstance(node, yaml.nodes.SequenceNode) else SourceNodeKind.SCALAR
+            entries.append(SourceLocationEntry(SourceNodePath(tuple(str(t) for t in path)), location, kind, key_location))
             if isinstance(node, yaml.nodes.MappingNode):
                 if node.tag != 'tag:yaml.org,2002:map':
-                    raise DecodeFailure('MOD-LOAD-008', 'Unsupported YAML mapping tag.', position)
+                    raise DecodeFailure('MOD-LOAD-008', 'Unsupported YAML mapping tag.', location=location)
                 value = {}
+                first_locations = {}
                 for key, child in node.value:
                     if not isinstance(key, yaml.nodes.ScalarNode) or key.tag != 'tag:yaml.org,2002:str':
-                        raise DecodeFailure('MOD-LOAD-008', 'YAML mapping keys must resolve to strings; merge keys are unsupported.', position)
+                        raise DecodeFailure('MOD-LOAD-008', 'YAML mapping keys must resolve to strings; merge keys are unsupported.', location=node_location(key))
+                    if any(0xD800 <= ord(c) <= 0xDFFF for c in key.value):
+                        raise DecodeFailure('MOD-LOAD-008', 'YAML property key contains invalid Unicode scalar values.', location=node_location(key))
                     if key.value in value:
-                        raise DecodeFailure('MOD-LOAD-006', 'Duplicate YAML mapping key is unsupported.', SourcePosition(key.start_mark.line + 1, key.start_mark.column + 1))
-                    value[key.value] = project(child, path + (key.value,))
+                        raise DecodeFailure('MOD-LOAD-006', 'Duplicate YAML mapping key is unsupported.', location=node_location(key), related=(first_locations[key.value],))
+                    first_locations[key.value] = node_location(key)
+                    value[key.value] = project(child, path + (key.value,), first_locations[key.value])
                 return value
             if isinstance(node, yaml.nodes.SequenceNode) and node.tag == 'tag:yaml.org,2002:seq':
                 return [project(child, path + (i,)) for i, child in enumerate(node.value)]
             if isinstance(node, yaml.nodes.ScalarNode) and node.tag in {f'tag:yaml.org,2002:{tag}' for tag in ('str', 'int', 'float', 'bool', 'null')}:
-                return loader.construct_object(node)
-            raise DecodeFailure('MOD-LOAD-008', 'Unsupported YAML scalar or collection type; quote dates/timestamps.', position)
+                scalar = loader.construct_object(node)
+                if type(scalar) is float and not math.isfinite(scalar):
+                    raise DecodeFailure('MOD-LOAD-008', 'Non-finite YAML numbers are unsupported.', location=location)
+                if type(scalar) is str and any(0xD800 <= ord(c) <= 0xDFFF for c in scalar):
+                    raise DecodeFailure('MOD-LOAD-013', 'YAML string contains invalid Unicode scalar values.', location=location)
+                return scalar
+            raise DecodeFailure('MOD-LOAD-008', 'Unsupported YAML scalar or collection type; quote dates/timestamps.', location=location)
 
         value = None if root is None else project(root, ())
+        index = SourceLocationTracker().build(content.source.source_id, tuple(entries), source_text=content.content)
         error = inspect_tree(value, options)
         if error:
-            return failed(content, *error)
-        return SourceDecodeResult(content.source, value, positions=tuple(positions))
+            return failed(content, *error, location=index.find(SourceNodePath()))
+        return SourceDecodeResult(content.source, value, positions=tuple(positions), locations=index)
     except DecodeFailure as exc:
-        return failed(content, exc.code, exc.message, exc.position)
+        return failed(content, exc.code, exc.message, exc.position, location=exc.location, related=exc.related)
     except yaml.YAMLError as exc:
         mark = getattr(exc, 'problem_mark', None)
-        position = None if mark is None else SourcePosition(mark.line + 1, mark.column + 1)
-        return failed(content, 'MOD-LOAD-005', 'Malformed YAML source.', position)
+        position = None if mark is None else SourcePosition(mark.line + 1, mark.column + 1, mark.index)
+        location = None if position is None else SourceLocation(content.source.source_id, SourceSpan(position, position))
+        return failed(content, 'MOD-LOAD-005', 'Malformed YAML source.', location=location)
     except (ValueError, RecursionError, OverflowError):
         return failed(content, 'MOD-LOAD-014', 'YAML numeric or parser resource limits were exceeded.')
     finally:
