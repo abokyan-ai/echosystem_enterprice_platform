@@ -180,7 +180,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")
-        self.assertEqual(report["summary"]["rules_executed"], 41)
+        self.assertEqual(report["summary"]["rules_executed"], 42)
 
     def test_existing_governance_evaluated_once_for_all_rules(self):
         from architecture_fitness.governance import evaluate_governance
@@ -188,7 +188,7 @@ class HarnessTests(unittest.TestCase):
         with patch("architecture_fitness.rules.evaluate_governance", wraps=evaluate_governance) as evaluator:
             report = execute(model, as_of=TODAY)
         self.assertEqual(evaluator.call_count, 1)
-        self.assertEqual(report["summary"]["rules_executed"], 41)
+        self.assertEqual(report["summary"]["rules_executed"], 42)
 
 
 class BootstrapFitnessTests(unittest.TestCase):
@@ -284,4 +284,23 @@ class NamespaceFitnessTests(unittest.TestCase):
         model = discover(ROOT)
         source = next(s for s in model.sources if s.owner == 'semantic-kernel' and s.file.endswith('/public.py'))
         self.assertIn('Namespace', [name for name, line in source.classes])
+        self.assertEqual(model.discovery_metadata['scan_passes'], 1)
+
+
+class QualifiedNameFitnessTests(unittest.TestCase):
+    def test_qualified_name_class_cannot_be_defined_outside_kernel(self):
+        for owner, zone in (('platform-cli', 'tooling'), ('runtime', 'runtime'), ('compiler', 'compiler')):
+            model = fixture((module(owner, zone),), (Source('other/public.py', owner, classes=(('QualifiedName', 9),)),))
+            report = execute(model, rule_ids=('ARCH-SK-QN-001',))
+            self.assertEqual(report['summary']['status'], 'FAILED')
+            self.assertEqual(report['violations'][0]['line'], 9)
+
+    def test_qualified_name_definition_allowed_in_kernel(self):
+        model = fixture((module('semantic-kernel', 'kernel'),), (Source('platform/kernel/public.py', 'semantic-kernel', classes=(('QualifiedName', 3),)),))
+        self.assertEqual(execute(model, rule_ids=('ARCH-SK-QN-001',))['summary']['status'], 'HEALTHY')
+
+    def test_qualified_name_discovery_reuses_single_ast_pass(self):
+        model = discover(ROOT)
+        source = next(s for s in model.sources if s.owner == 'semantic-kernel' and s.file.endswith('/public.py'))
+        self.assertIn('QualifiedName', [name for name, line in source.classes])
         self.assertEqual(model.discovery_metadata['scan_passes'], 1)

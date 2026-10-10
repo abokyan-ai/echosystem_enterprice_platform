@@ -3,7 +3,7 @@ from dataclasses import dataclass as _dataclass, field as _field
 import re as _re
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -127,3 +127,75 @@ class Namespace:
 
     def __str__(self) -> str:
         return self.value
+
+
+_LOCAL_NAME = _re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+
+
+class QualifiedNameError(ValueError):
+    """Naming diagnostic; namespace failures preserve their code and segment index."""
+    def __init__(self, code: str, message: str, segment_index: int | None = None, namespace_code: str | None = None):
+        self.code = code
+        self.message = message
+        self.segment_index = segment_index
+        self.namespace_code = namespace_code
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class QualifiedName:
+    """Structured semantic name: canonical Namespace plus case-sensitive local name.
+
+    Local names match ASCII [A-Za-z][A-Za-z0-9_]*. Names carry no stable
+    identity, version, kind, tenant, display-name or resolution semantics.
+    """
+    namespace: Namespace
+    local_name: str
+
+    def __post_init__(self):
+        if self.namespace is None:
+            raise QualifiedNameError("SEM-QN-002", "Qualified name requires an explicit Namespace.")
+        if not isinstance(self.namespace, Namespace):
+            raise QualifiedNameError("SEM-QN-003", "Namespace component must be a validated Namespace value.")
+        local = self.local_name
+        index = len(self.namespace.segments)
+        if local is None or isinstance(local, str) and not local:
+            raise QualifiedNameError("SEM-QN-005", "Qualified name contains an empty local segment.", index)
+        if not isinstance(local, str) or _LOCAL_NAME.fullmatch(local) is None:
+            raise QualifiedNameError("SEM-QN-004", "Invalid local semantic name: expected an ASCII letter followed by ASCII letters, digits or underscores; whitespace, dots and other characters are forbidden.", index)
+        # Preserve exact case while retaining a plain string with standard equality/hash.
+        object.__setattr__(self, "local_name", str.__str__(local))
+
+    @classmethod
+    def create(cls, namespace: Namespace, local_name: str) -> "QualifiedName":
+        """Construct from a validated namespace and one local name."""
+        return cls(namespace, local_name)
+
+    @classmethod
+    def parse(cls, value: str) -> "QualifiedName":
+        """Split at the last dot and delegate the namespace portion to SK-02."""
+        if value is None or isinstance(value, str) and (not value or str.isspace(value)):
+            raise QualifiedNameError("SEM-QN-001", "Qualified name must not be empty.")
+        if not isinstance(value, str):
+            raise QualifiedNameError("SEM-QN-006", "Qualified name requires a string representation.")
+        namespace_text, separator, local = str.rpartition(value, ".")
+        if not separator:
+            raise QualifiedNameError("SEM-QN-002", "Qualified name must contain an explicit namespace.")
+        try:
+            namespace = Namespace.parse(namespace_text)
+        except NamespaceError as error:
+            code = "SEM-QN-005" if error.code == "SEM-NS-004" or not namespace_text else "SEM-QN-003"
+            index = error.segment_index if error.segment_index is not None else 0
+            raise QualifiedNameError(code, "Invalid namespace portion: " + error.message, index, error.code) from error
+        return cls(namespace, local)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "QualifiedName | None":
+        """Return None for rejected input; unexpected implementation failures propagate."""
+        try:
+            return cls.parse(value)
+        except QualifiedNameError:
+            return None
+
+    def __str__(self) -> str:
+        return str(self.namespace) + "." + self.local_name

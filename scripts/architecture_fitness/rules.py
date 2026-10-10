@@ -171,4 +171,7 @@ def default_registry():
     def namespace_owner(model, context):
         return [ArchitectureViolation("ARCH-SK-NS-001", Severity.CRITICAL, "Namespace definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class Namespace", "Use semantic_kernel.public.Namespace; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "Namespace" and source.owner != "semantic-kernel"]
     registry.register(ArchitectureRule("ARCH-SK-NS-001", "Semantic namespace ownership", "Namespace class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", namespace_owner))
+    def qualified_name_owner(model, context):
+        return [ArchitectureViolation("ARCH-SK-QN-001", Severity.CRITICAL, "QualifiedName definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class QualifiedName", "Use semantic_kernel.public.QualifiedName; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "QualifiedName" and source.owner != "semantic-kernel"]
+    registry.register(ArchitectureRule("ARCH-SK-QN-001", "Qualified semantic name ownership", "QualifiedName class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", qualified_name_owner))
     return registry
