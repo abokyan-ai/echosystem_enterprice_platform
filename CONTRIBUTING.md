@@ -3,8 +3,8 @@
 1. Use Python 3.11+ and the root commands in README. No dependency installation is needed.
 2. Create a focused branch. Keep changes inside the owning module and import other modules through `package.public` only.
 3. Before creating a module, state its responsibility, public contract and allowed dependency edges. Register zone/owner/language/public surface/edge categories in `architecture.json` and validate against `architecture-policy.json` and update documentation. Avoid generic shared/common/utils packages.
-4. Run `python3 scripts/dev.py lint`, `build`, `test`, `test:architecture` and `doctor` before submitting a pull request.
-5. Add negative architecture fixtures for new rules and meaningful behavior tests for implemented features. Do not add fake tests for future features.
+4. Follow [AGENTS.md](AGENTS.md): comprehensive/runtime tests are currently DEFERRED. Document complete cases in the task archive; do not run `test`, `test:architecture` or archived cases. Essential static lint/build/dependency checks are separate and do not establish semantic correctness.
+5. Under the current deferral policy, document meaningful positive/negative/edge/integration scenarios in the repository task archive. Preserve existing executable tests and update affected expectations, but do not run them or introduce infrastructure solely for deferred testing.
 6. External dependencies need explicit review, narrow ownership, an approved adapter profile and a module declaration. Neutral zones use restricted foundational stdlib allowlists. Current Django/DRF approvals are for future HTTP adapters only; no third-party library is installed.
 7. Use UTF-8, LF, four-space Python indentation and no trailing whitespace. `lint` checks syntax/whitespace/import policy; there is no unused formatter dependency.
 8. Keep source, configuration, secrets and generated artifacts separate. No production deployment is included.

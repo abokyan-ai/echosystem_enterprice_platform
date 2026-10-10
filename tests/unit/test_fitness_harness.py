@@ -174,9 +174,9 @@ class HarnessTests(unittest.TestCase):
 
     def test_actual_repository_discovery_contract(self):
         model = discover(ROOT)
-        self.assertEqual(len(model.modules), 7)
+        self.assertEqual(len(model.modules), 8)
         self.assertEqual(model.discovery_metadata["scan_passes"], 1)
-        self.assertEqual(len(model.graph("observed")["platform-cli"]), 6)
+        self.assertEqual(len(model.graph("observed")["platform-cli"]), 7)
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")

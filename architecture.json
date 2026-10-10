@@ -39,6 +39,27 @@
       ]
     },
     {
+      "name": "model-authoring",
+      "path": "platform/model/model-authoring",
+      "package": "model_authoring",
+      "allowed_dependencies": [
+        "semantic-kernel",
+        "model-core"
+      ],
+      "zone": "model",
+      "owner": "model authoring maintainers",
+      "language": "python",
+      "public_api": [
+        "model_authoring.public"
+      ],
+      "external_dependencies": [],
+      "dependency_categories": {
+        "semantic-kernel": "api",
+        "model-core": "api"
+      },
+      "activation_dependencies": []
+    },
+    {
       "name": "compiled-contracts",
       "path": "platform/contracts/compiled-contracts",
       "package": "compiled_contracts",
@@ -134,7 +155,8 @@
         "compiled-contracts",
         "compiler-core",
         "runtime-core",
-        "bootstrap-contracts"
+        "bootstrap-contracts",
+        "model-authoring"
       ],
       "zone": "tooling",
       "owner": "tooling maintainers",
@@ -149,7 +171,8 @@
         "compiled-contracts": "development",
         "compiler-core": "development",
         "runtime-core": "development",
-        "bootstrap-contracts": "api"
+        "bootstrap-contracts": "api",
+        "model-authoring": "development"
       }
     }
   ]
