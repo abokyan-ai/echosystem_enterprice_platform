@@ -1,0 +1,2 @@
+# MOD-02 parser adapter only; no framework dependency in semantic contracts.
+PyYAML==6.0.3

@@ -31,7 +31,8 @@ def main():
         def run(*arguments):
             subprocess.run([sys.executable, *arguments], cwd=ROOT, env=env, check=True)
         if args.command == "install":
-            print("Ready: standard-library-only workspace; no dependencies to install")
+            run("-m", "pip", "install", "-r", "requirements-model-loader.txt")
+            print("Ready: explicit MOD-02 YAML parser dependency installed")
         elif args.command in {"build", "lint"}:
             errors = check(ROOT)
             if errors:
