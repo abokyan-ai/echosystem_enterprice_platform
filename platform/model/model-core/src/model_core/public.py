@@ -1247,3 +1247,21 @@ __all__ += [
     'CanonicalConstructionDiagnostic', 'CanonicalConstructionFailure',
     'CanonicalModelConstructionError',
 ]
+
+
+def create_type_data_definition(id: SemanticElementId, qualified_name: QualifiedName, context: SemanticContextRef, version: SemanticVersion, data: DataFacet | None = None) -> TypeDataComposition:
+    """Construct the existing supported host/data seam; not full TYPE-01.
+
+    No identity generation, registry mutation, validation matrix or new host
+    class. The existing five-value frozen capture stays owned by model-core.
+    """
+    owner = _RegisteredTypeElement(id, qualified_name, context, SemanticElementKinds.TYPE_DEFINITION, version)
+    captured = _registry_capture_owner(owner)
+    if captured is None:
+        raise DataFacetError('TYPE-DATA-006', 'Construction requires the existing five canonical semantic values.')
+    if not _registry_data_is_canonical(data):
+        raise DataFacetError('TYPE-DATA-005', 'Construction requires immutable supported DataFacet values or None.')
+    return TypeDataComposition(captured, data)
+
+
+__all__ += ['create_type_data_definition']
