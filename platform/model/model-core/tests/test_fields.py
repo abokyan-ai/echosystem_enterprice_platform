@@ -1,3 +1,5 @@
+from semantic_kernel.public import PrimitiveTypes
+from model_core.public import PrimitiveTypeRef
 from dataclasses import FrozenInstanceError, replace
 import unittest
 from unittest.mock import patch
@@ -125,20 +127,20 @@ class FieldDefinitionTests(unittest.TestCase):
         identity = FieldId(ID)
         name = FieldName('creditLimit')
         with patch.object(FieldId, 'parse', side_effect=AssertionError('reparse')), patch.object(FieldName, 'parse', side_effect=AssertionError('reparse')):
-            for field in (FieldDefinition(identity, name, FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())), FieldDefinition.create(identity, name, FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))):
+            for field in (FieldDefinition(identity, name, PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())), FieldDefinition.create(identity, name, PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))):
                 self.assertIs(field.id, identity)
                 self.assertIs(field.name, name)
 
     def test_typed_construction_diagnostics(self):
         for identity, name, code in ((None, FieldName('name'), '001'), (ID, FieldName('name'), '002'), (SemanticElementId('sem_' + ID[4:]), FieldName('name'), '002'), (FieldId(ID), None, '003'), (FieldId(ID), 'name', '004'), (FieldId(ID), QualifiedName.parse('sales.Customer'), '004')):
             with self.subTest(code=code), self.assertRaises(FieldDefinitionError) as caught:
-                FieldDefinition.create(identity, name, FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+                FieldDefinition.create(identity, name, PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
             self.assertEqual(caught.exception.code, 'TYPE-FIELD-' + code)
         with self.assertRaises(TypeError):
             FieldDefinition(FieldId(ID))
 
     def test_immutable_snapshot_and_nested_values(self):
-        field = FieldDefinition(FieldId(ID), FieldName('creditLimit'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+        field = FieldDefinition(FieldId(ID), FieldName('creditLimit'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
         for member, value in (('id', FieldId(OTHER)), ('name', FieldName('creditCeiling'))):
             with self.assertRaises(FrozenInstanceError):
                 setattr(field, member, value)
@@ -147,17 +149,17 @@ class FieldDefinitionTests(unittest.TestCase):
         self.assertFalse(hasattr(field, '__dict__'))
 
     def test_rename_preserves_identity_but_changes_snapshot_equality(self):
-        original = FieldDefinition(FieldId(ID), FieldName('creditLimit'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+        original = FieldDefinition(FieldId(ID), FieldName('creditLimit'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
         renamed = replace(original, name=FieldName('creditCeiling'))
         self.assertEqual(original.id, renamed.id)
         self.assertNotEqual(original.name, renamed.name)
         self.assertNotEqual(original, renamed)
-        self.assertEqual(original, FieldDefinition(FieldId.parse(ID), FieldName('creditLimit'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())))
-        self.assertEqual(hash(original), hash(FieldDefinition(FieldId(ID), FieldName('creditLimit'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))))
+        self.assertEqual(original, FieldDefinition(FieldId.parse(ID), FieldName('creditLimit'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())))
+        self.assertEqual(hash(original), hash(FieldDefinition(FieldId(ID), FieldName('creditLimit'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))))
 
     def test_same_name_can_have_different_identity_before_collection_validation(self):
-        a = FieldDefinition(FieldId(ID), FieldName('code'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
-        b = FieldDefinition(FieldId(OTHER), FieldName('code'), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+        a = FieldDefinition(FieldId(ID), FieldName('code'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+        b = FieldDefinition(FieldId(OTHER), FieldName('code'), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
         self.assertEqual(a.name, b.name)
         self.assertNotEqual(a.id, b.id)
         self.assertNotEqual(a, b)
@@ -169,6 +171,6 @@ class FieldDefinitionTests(unittest.TestCase):
             for name in group:
                 number = len(fields)
                 identity = FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}')
-                fields.append(FieldDefinition.create(identity, FieldName(name), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())))
+                fields.append(FieldDefinition.create(identity, FieldName(name), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())))
         self.assertEqual([str(field.name) for field in fields], ['name', 'active', 'name', 'price', 'orderNumber', 'orderDate'])
         self.assertEqual(len({field.id for field in fields}), 6)

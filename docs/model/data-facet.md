@@ -1,10 +1,10 @@
 # TYPE-03: DataFacet v0
 
-Current TYPE-04 update: FieldDefinition now requires id, name and explicit FieldConstraintSet; collection ownership, uniqueness and ordering are unchanged. See [constraints](field-constraints.md). Descriptions below of original TYPE-03 inspection and verification are historical where noted.
+Current TYPE-05 update: FieldDefinition now requires id, name, TypeRef and explicit FieldConstraintSet; collection ownership, uniqueness and ordering are unchanged. See [constraints](field-constraints.md). Descriptions below of original TYPE-03 inspection and verification are historical where noted.
 
 ## Existing state and prerequisite gap
 
-TYPE-02 supplies immutable FieldId/FieldName/FieldDefinition(id,name,constraints), and SK-10 supplies the small structural FacetDefinition Protocol, open kinds and FacetApplicability. Inspected main still lacks TYPE-01 production TypeDefinition, SK-09 PrimitiveType and SK-11 Diagnostics Model. This stage implements concrete DataFacet and a minimal host association using the existing five-property SemanticElement contract. Integration is exercised with an immutable **test-only** TypeDefinition fixture; it does not claim a production TYPE-01 implementation. Complete missing stages before claiming integrated production type-model readiness.
+TYPE-02 supplies immutable FieldId/FieldName/FieldDefinition(id,name,type,constraints), and SK-10 supplies the small structural FacetDefinition Protocol, open kinds and FacetApplicability. Inspected main still lacks TYPE-01 production TypeDefinition, SK-09 PrimitiveType and SK-11 Diagnostics Model. This stage implements concrete DataFacet and a minimal host association using the existing five-property SemanticElement contract. Integration is exercised with an immutable **test-only** TypeDefinition fixture; it does not claim a production TYPE-01 implementation. Complete missing stages before claiming integrated production type-model readiness.
 
 ## DataFacet contract
 
@@ -69,12 +69,12 @@ No semantic path/source location becomes an ID or stored member. A future unifie
 A test-only specific converter demonstrates **internal/evolving** model JSON with kind data and ordered fields:
 
 ```json
-{"kind":"data","fields":[{"id":"fld_550e8400-e29b-41d4-a716-000000000000","name":"name","constraints":{"presence":"required","nullability":"non-null","values":[]}}]}
+{"kind":"data","fields":[{"id":"fld_550e8400-e29b-41d4-a716-000000000000","name":"name","type":{"kind":"primitive","primitive":"string"},"constraints":{"presence":"required","nullability":"non-null","values":[]}}]}
 ```
 
 Field order, IDs and exact names survive round trips; parsed values pass primitive and DataFacet validation. This is not a final public Authoring Schema before TYPE-04/05. No runtime class discriminator, generic polymorphic loader, serializer framework or automatic json.dumps support enters the model. Production host serialization is not claimed while TYPE-01 is absent.
 
-Type references remain absent; TYPE-04 constraints are explicit typed snapshots. No raw type strings/object/null placeholder, defaults/computed fields, constraint bag or actual instance values. No table/column/key/index, API/UI/search mapping, persistence/compiler methods, relationship/security or tenant/package semantics. Collection order preserves canonical/authoring fidelity; it does not mandate UI order or classify reorder/rename compatibility. No SQL migration or instance model is produced.
+TYPE-05 type references and TYPE-04 constraints are explicit typed snapshots. No raw type strings/object/null placeholder, defaults/computed fields, constraint bag or actual instance values. No table/column/key/index, API/UI/search mapping, persistence/compiler methods, relationship/security or tenant/package semantics. Collection order preserves canonical/authoring fidelity; it does not mandate UI order or classify reorder/rename compatibility. No SQL migration or instance model is produced.
 
 ## Verification and next work
 

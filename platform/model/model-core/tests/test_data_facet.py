@@ -1,3 +1,5 @@
+from semantic_kernel.public import PrimitiveTypes
+from model_core.public import PrimitiveTypeRef
 from dataclasses import FrozenInstanceError, replace
 import unittest
 from model_core.public import FieldConstraintSet, FieldPresence, FieldNullability, DataFacet, DataFacetError, FieldDefinition, FieldId, FieldName
@@ -5,7 +7,7 @@ from semantic_kernel.public import FacetKinds
 
 
 def field(number, name):
-    return FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
+    return FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name), PrimitiveTypeRef(PrimitiveTypes.STRING), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
 
 
 class DataFacetTests(unittest.TestCase):

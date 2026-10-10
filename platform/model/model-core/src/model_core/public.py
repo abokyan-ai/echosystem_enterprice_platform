@@ -4,10 +4,10 @@ import re as _re
 from enum import Enum as _Enum
 from decimal import Decimal as _Decimal
 from typing import Protocol as _Protocol
-from semantic_kernel.public import FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
+from semantic_kernel.public import PrimitiveType, ElementRef, FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
 
 MODULE_NAME = "model-core"
-__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet"]
+__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet", "TypeRef", "TypeRefKind", "PrimitiveTypeRef", "SemanticTypeRef", "TypeRefError"]
 
 # Same UUIDv4 representation strategy as SK-01, with distinct model-owned intent.
 _FIELD_ID = _re.compile(r"fld_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -381,15 +381,67 @@ class FieldConstraintSet:
         return next((c for c in self.value_constraints if c.kind == kind), None)
 
 
+class TypeRefError(ValueError):
+    """Reference construction error, never an existence/kind-resolution diagnostic."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+class TypeRefKind(_Enum):
+    PRIMITIVE = 'primitive'
+    SEMANTIC = 'semantic'
+
+
+@_dataclass(frozen=True, slots=True)
+class PrimitiveTypeRef:
+    """Built-in semantic primitive reference; never a raw or programming type."""
+    primitive: PrimitiveType
+
+    def __post_init__(self):
+        if type(self.primitive) is not PrimitiveType:
+            raise TypeRefError('TYPE-REF-002', 'Primitive reference requires a validated PrimitiveType.')
+
+    @property
+    def kind(self) -> TypeRefKind:
+        return TypeRefKind.PRIMITIVE
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticTypeRef:
+    """Identity-pinned intent to target a TypeDefinition; no lookup is performed.
+
+    Target existence/kind and exact version resolution require later model context.
+    No host object, name hint, registry, optional version or relationship semantics.
+    """
+    target: ElementRef
+
+    def __post_init__(self):
+        if self.target is None:
+            raise TypeRefError('TYPE-REF-005', 'Semantic type reference target is required.')
+        if type(self.target) is not ElementRef:
+            raise TypeRefError('TYPE-REF-003', 'Semantic type reference requires an identity-only ElementRef.')
+
+    @property
+    def kind(self) -> TypeRefKind:
+        return TypeRefKind.SEMANTIC
+
+
+# Closed two-variant algebra, not a Protocol accepting arbitrary unknown payloads.
+TypeRef = PrimitiveTypeRef | SemanticTypeRef
+
+
 @_dataclass(frozen=True, slots=True)
 class FieldDefinition:
     """Owned structural member snapshot, not a first-class SemanticElement.
 
     Compare .id for identity; snapshot equality/hash includes explicit constraints.
-    TYPE-05 will add type references; no type inference or owner back pointers.
+    Required TypeRef records semantic intent; no type inference or owner back pointers.
     """
     id: FieldId
     name: FieldName
+    type: TypeRef
     constraints: FieldConstraintSet
 
     def __post_init__(self):
@@ -402,13 +454,17 @@ class FieldDefinition:
         if not isinstance(self.name, FieldName):
             raise FieldDefinitionError("TYPE-FIELD-004", "Field definition requires a validated FieldName value.")
 
+        if self.type is None:
+            raise TypeRefError('TYPE-REF-001', 'Field type reference is required.')
+        if type(self.type) not in (PrimitiveTypeRef, SemanticTypeRef):
+            raise TypeRefError('TYPE-REF-004', 'Field type requires one of the two canonical TypeRef variants.')
         if type(self.constraints) is not FieldConstraintSet:
             raise FieldDefinitionError("TYPE-FIELD-005", "Field definition requires an explicit FieldConstraintSet.")
 
     @classmethod
-    def create(cls, id: FieldId, name: FieldName, constraints: FieldConstraintSet) -> "FieldDefinition":
+    def create(cls, id: FieldId, name: FieldName, type: TypeRef, constraints: FieldConstraintSet) -> "FieldDefinition":
         """Construct from typed values without reparsing, generation or lookup."""
-        return cls(id, name, constraints)
+        return cls(id, name, type, constraints)
 
 
 class DataFacetError(ValueError):

@@ -1,9 +1,11 @@
 """Internal evolving snapshot mapping, not a final authoring schema or public API.
 
 Only plain wire mappings cross this boundary. Model constructors own invariants;
-no JSON/framework attributes enter definitions. TYPE-05 will evolve field shape.
+no JSON/framework attributes enter definitions. Field shape remains an evolving snapshot schema.
 """
+from semantic_kernel.public import PrimitiveType, ElementRef
 from model_core.public import (
+    TypeRef, TypeRefKind, PrimitiveTypeRef, SemanticTypeRef, TypeRefError,
     FieldPresence, FieldNullability, FieldConstraintSet, FieldConstraintError,
     MinLengthConstraint, MaxLengthConstraint, MinimumConstraint, MaximumConstraint,
     PrecisionConstraint, ScaleConstraint, PatternConstraint, NumericConstraintValue,
@@ -67,9 +69,36 @@ def constraints_from_wire(wire: dict) -> FieldConstraintSet:
 def field_to_wire(field: FieldDefinition) -> dict:
     if type(field) is not FieldDefinition:
         raise FieldConstraintError('TYPE-CONSTRAINT-015', 'Expected a typed FieldDefinition snapshot.')
-    return {'id': str(field.id), 'name': str(field.name), 'constraints': constraints_to_wire(field.constraints)}
+    return {'id': str(field.id), 'name': str(field.name), 'type': type_ref_to_wire(field.type), 'constraints': constraints_to_wire(field.constraints)}
 
 
 def field_from_wire(wire: dict) -> FieldDefinition:
-    _shape(wire, ('id', 'name', 'constraints'))
-    return FieldDefinition.create(FieldId.parse(wire['id']), FieldName.parse(wire['name']), constraints_from_wire(wire['constraints']))
+    _shape(wire, ('id', 'name', 'type', 'constraints'))
+    return FieldDefinition.create(FieldId.parse(wire['id']), FieldName.parse(wire['name']), type_ref_from_wire(wire['type']), constraints_from_wire(wire['constraints']))
+
+
+
+def type_ref_to_wire(reference: TypeRef) -> dict:
+    """Explicit internal discriminator; no repr/class-name/compact heuristics."""
+    if type(reference) is PrimitiveTypeRef:
+        return {'kind': reference.kind.value, 'primitive': str(reference.primitive)}
+    if type(reference) is SemanticTypeRef:
+        return {'kind': reference.kind.value, 'elementRef': str(reference.target)}
+    raise TypeRefError('TYPE-REF-004', 'Expected a canonical primitive or semantic reference.')
+
+
+def type_ref_from_wire(wire: dict) -> TypeRef:
+    if wire is None:
+        raise TypeRefError('TYPE-REF-001', 'Type reference wire value is required.')
+    if type(wire) is not dict or type(wire.get('kind')) is not str:
+        raise TypeRefError('TYPE-REF-004', 'Type reference requires an explicit canonical discriminator.')
+    try:
+        kind = TypeRefKind(wire['kind'])
+    except ValueError:
+        raise TypeRefError('TYPE-REF-004', 'Unsupported type reference discriminator.') from None
+    key = 'primitive' if kind is TypeRefKind.PRIMITIVE else 'elementRef'
+    if set(wire) != {'kind', key}:
+        raise TypeRefError('TYPE-REF-004', 'Type reference requires exactly its variant members.')
+    if kind is TypeRefKind.PRIMITIVE:
+        return PrimitiveTypeRef(PrimitiveType.parse(wire[key]))
+    return SemanticTypeRef(ElementRef.parse(wire[key]))

@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from architecture_fitness.discovery import discover
 from architecture_fitness.engine import execute
-from model_core.public import FieldDefinition, FieldId, FieldName, FieldConstraintSet
+from model_core.public import FieldDefinition, FieldId, FieldName, FieldConstraintSet, TypeRef
 from semantic_kernel.public import SemanticElement
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,10 +18,10 @@ class FieldBoundaryTests(unittest.TestCase):
         self.assertEqual(model.graph('observed')['model-core'], {'semantic-kernel'})
         self.assertEqual(execute(model)['summary']['status'], 'HEALTHY')
 
-    def test_snapshot_contains_only_three_model_owned_typed_members(self):
-        self.assertEqual({field.name: field.type for field in fields(FieldDefinition)}, {'id': FieldId, 'name': FieldName, 'constraints': FieldConstraintSet})
+    def test_snapshot_contains_only_four_model_owned_typed_members(self):
+        self.assertEqual({field.name: field.type for field in fields(FieldDefinition)}, {'id': FieldId, 'name': FieldName, 'type': TypeRef, 'constraints': FieldConstraintSet})
         self.assertNotIn(SemanticElement, FieldDefinition.__mro__)
-        for name in ('qualified_name', 'context', 'kind', 'version', 'type', 'required', 'nullable', 'default', 'order', 'ordinal', 'column_name', 'label', 'owner', 'registry', 'resolve', 'compile', 'persist'):
+        for name in ('qualified_name', 'context', 'kind', 'version', 'required', 'nullable', 'default', 'order', 'ordinal', 'column_name', 'label', 'owner', 'registry', 'resolve', 'compile', 'persist'):
             self.assertFalse(hasattr(FieldDefinition, name), name)
 
     def test_model_public_boundary_has_only_foundational_imports(self):

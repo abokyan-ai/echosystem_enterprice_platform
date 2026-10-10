@@ -1,3 +1,5 @@
+from semantic_kernel.public import PrimitiveTypes
+from model_core.public import PrimitiveTypeRef
 from dataclasses import replace
 import json
 import unittest
@@ -18,7 +20,7 @@ def sales_fields():
         ('middleName', FieldPresence.OPTIONAL, FieldNullability.NULLABLE, []),
         ('creditLimit', FieldPresence.OPTIONAL, FieldNullability.NON_NULL, [MinimumConstraint('0'), PrecisionConstraint(18), ScaleConstraint(2)]),
     )
-    return tuple(FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name), FieldConstraintSet(p, n, values)) for i, (name, p, n, values) in enumerate(specs))
+    return tuple(FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name), PrimitiveTypeRef({'name': PrimitiveTypes.STRING, 'middleName': PrimitiveTypes.STRING, 'creditLimit': PrimitiveTypes.DECIMAL}[name]), FieldConstraintSet(p, n, values)) for i, (name, p, n, values) in enumerate(specs))
 
 
 def read_definition(value: ValueConstraint):
@@ -39,7 +41,7 @@ class ConstraintContractTests(unittest.TestCase):
         self.assertEqual([str(f.name) for f in fields], ['name', 'middleName', 'creditLimit'])
         wire = field_to_wire(fields[2])
         self.assertEqual(wire['constraints'], {'presence': 'optional', 'nullability': 'non-null', 'values': [{'kind': 'minimum', 'value': '0'}, {'kind': 'precision', 'value': 18}, {'kind': 'scale', 'value': 2}]})
-        self.assertNotIn('type', wire)
+        self.assertEqual(wire['type'], {'kind': 'primitive', 'primitive': 'decimal'})
         for field in fields:
             self.assertEqual(field_from_wire(json.loads(json.dumps(field_to_wire(field)))), field)
 
