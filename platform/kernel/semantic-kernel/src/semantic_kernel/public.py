@@ -4,7 +4,7 @@ import re as _re
 from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -329,6 +329,121 @@ class _CoreSemanticElementKinds:
 SemanticElementKinds = _CoreSemanticElementKinds()
 
 
+# Components use the portable non-negative signed 64-bit range.
+_VERSION_COMPONENT_MAX = 9223372036854775807
+_VERSION_COMPONENT = _re.compile(r"0|[1-9][0-9]*")
+
+
+class SemanticVersionError(ValueError):
+    """Exact-version diagnostic, optionally identifying the invalid component."""
+    def __init__(self, code: str, message: str, component_index: int | None = None):
+        self.code = code
+        self.message = message
+        self.component_index = component_index
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True, order=True)
+class SemanticVersion:
+    """Exact major.minor.patch coordinate; numeric order does not imply compatibility.
+
+    Components are plain integers in 0..9223372036854775807. No selectors,
+    prerelease/build suffixes, normalization or implicit increment policy.
+    """
+    major: int
+    minor: int
+    patch: int
+
+    def __post_init__(self):
+        for index, component in enumerate((self.major, self.minor, self.patch)):
+            if type(component) is not int or not 0 <= component <= _VERSION_COMPONENT_MAX:
+                raise SemanticVersionError("SEM-VER-003", f"Invalid version component at index {index}: expected a plain integer in 0..9223372036854775807.", index)
+
+    @classmethod
+    def parse(cls, value: str) -> "SemanticVersion":
+        """Parse exactly three canonical ASCII components; never trim or coerce."""
+        if value is None or isinstance(value, str) and (not value or str.isspace(value)):
+            raise SemanticVersionError("SEM-VER-001", "Semantic version is required.")
+        if not isinstance(value, str):
+            raise SemanticVersionError("SEM-VER-002", "Expected canonical ASCII major.minor.patch, for example 1.0.0.")
+        parts = str.split(value, ".")
+        if len(parts) != 3 or any(_VERSION_COMPONENT.fullmatch(part) is None for part in parts):
+            raise SemanticVersionError("SEM-VER-002", "Expected canonical ASCII major.minor.patch without leading zeros, whitespace, prefixes, ranges or suffixes; for example 1.0.0.")
+        for index, part in enumerate(parts):
+            # Check length before int conversion, independent of Python's digit limit.
+            if len(part) > 19 or int(part) > _VERSION_COMPONENT_MAX:
+                raise SemanticVersionError("SEM-VER-003", f"Version component at index {index} exceeds 9223372036854775807.", index)
+        return cls(*(int(part) for part in parts))
+
+    @classmethod
+    def try_parse(cls, value: object) -> "SemanticVersion | None":
+        """Return None for version diagnostics only; unexpected failures propagate."""
+        try:
+            return cls.parse(value)
+        except SemanticVersionError:
+            return None
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch}"
+
+
+class ElementVersionRefError(ValueError):
+    """Exact-reference diagnostic preserving a delegated primitive code/cause."""
+    def __init__(self, code: str, message: str, primitive_code: str | None = None):
+        self.code = code
+        self.message = message
+        self.primitive_code = primitive_code
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class ElementVersionRef:
+    """Stable element identity plus one exact definition version, without resolution.
+
+    No name/context/kind, existence check, registry, latest lookup or compatibility
+    semantics. A coordinate is not a content-integrity proof.
+    """
+    element_id: SemanticElementId
+    version: SemanticVersion
+
+    def __post_init__(self):
+        if self.element_id is None:
+            raise ElementVersionRefError("SEM-VREF-001", "Element version reference requires an element ID.")
+        if self.version is None:
+            raise ElementVersionRefError("SEM-VREF-002", "Element version reference requires a semantic version.")
+        if not isinstance(self.element_id, SemanticElementId) or not isinstance(self.version, SemanticVersion):
+            raise ElementVersionRefError("SEM-VREF-003", "Element version reference requires validated SemanticElementId and SemanticVersion values.")
+
+    @classmethod
+    def parse(cls, value: str) -> "ElementVersionRef":
+        """Parse ID@version for human interchange; JSON should use two named fields."""
+        if not isinstance(value, str) or str.count(value, "@") != 1:
+            raise ElementVersionRefError("SEM-VREF-003", "Expected exactly one SemanticElementId@major.minor.patch reference.")
+        identity_text, version_text = str.split(value, "@")
+        try:
+            identity = SemanticElementId.parse(identity_text)
+        except SemanticElementIdError as error:
+            code = "SEM-VREF-001" if error.code == "SEM-ID-001" else "SEM-VREF-003"
+            raise ElementVersionRefError(code, "Invalid element identity: " + error.message, error.code) from error
+        try:
+            version = SemanticVersion.parse(version_text)
+        except SemanticVersionError as error:
+            code = "SEM-VREF-002" if error.code == "SEM-VER-001" else "SEM-VREF-003"
+            raise ElementVersionRefError(code, "Invalid exact semantic version: " + error.message, error.code) from error
+        return cls(identity, version)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "ElementVersionRef | None":
+        """Return None for reference diagnostics only; unexpected failures propagate."""
+        try:
+            return cls.parse(value)
+        except ElementVersionRefError:
+            return None
+
+    def __str__(self) -> str:
+        return str(self.element_id) + "@" + str(self.version)
+
+
 class SemanticElement(_Protocol):
     """Minimal read-only contract for a first-class semantic definition snapshot.
 
@@ -354,4 +469,9 @@ class SemanticElement(_Protocol):
     @property
     def kind(self) -> SemanticElementKind:
         """Explicit open semantic category, independent of implementation class."""
+        ...
+
+    @property
+    def version(self) -> SemanticVersion:
+        """Explicit exact definition version; not a package/artifact version."""
         ...
