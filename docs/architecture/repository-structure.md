@@ -37,3 +37,5 @@ These locations are documented future boundaries; adding them does not require r
 
 
 ARC-04: see [platform bootstrap](platform-bootstrap.md). Hosting contracts live in `platform/bootstrap/contracts`; concrete composition/configuration/lifecycle lives in CLI internals. Activation dependencies are separate from architectural allowed imports. TestHost and fakes are test-only.
+
+MOD-04 canonical aggregation contracts are owned by the existing model-core public API; membership reuses current semantic host/data values, not model-authoring/source-loading types. Nine-module inventory, current dependency policy and five foundation activation markers remain unchanged. Full TYPE-01/SK-11 integration is explicitly incomplete.

@@ -1057,3 +1057,193 @@ class TypeRegistryLookup:
         if entry is None:
             raise RuntimeError('Bound lookup snapshot lost a previously verified exact entry.')
         return entry.type_definition
+
+
+# MOD-04: selected semantic membership, not registration or canonicalization.
+# Closed supported payload vocabulary. Future kinds need actual owned definition
+# contracts plus an explicit alias/capture extension; arbitrary Protocols fail shut.
+CanonicalDefinition = TypeDataComposition
+CANONICAL_DEFINITION_KINDS: tuple[SemanticElementKind, ...] = (SemanticElementKinds.TYPE_DEFINITION,)
+
+
+class CanonicalConstructionFailure(_Enum):
+    INVALID_SCOPE = 'MOD-CANON-001'
+    INVALID_COLLECTION = 'MOD-CANON-002'
+    UNSUPPORTED_DEFINITION = 'MOD-CANON-003'
+    INVALID_DEFINITION = 'MOD-CANON-004'
+    SCOPE_MISMATCH = 'MOD-CANON-005'
+    EXACT_CONFLICT = 'MOD-CANON-006'
+    QUALIFIED_NAME_COLLISION = 'MOD-CANON-007'
+
+
+@_dataclass(frozen=True, slots=True)
+class CanonicalConstructionDiagnostic:
+    """Intrinsic construction seam pending general SK-11; no semantic judgment."""
+    code: CanonicalConstructionFailure
+    message: str
+    reference: ElementVersionRef | None = None
+    qualified_name: QualifiedName | None = None
+    context: SemanticContextRef | None = None
+    input_index: int | None = None
+    related_reference: ElementVersionRef | None = None
+    related_input_index: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not CanonicalConstructionFailure or type(self.message) is not str or not self.message:
+            raise TypeError('Canonical diagnostics require a supported intrinsic code and message.')
+        for value, expected in ((self.reference, ElementVersionRef), (self.related_reference, ElementVersionRef), (self.qualified_name, QualifiedName), (self.context, SemanticContextRef)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Canonical diagnostic coordinates require existing typed contracts.')
+        for value in (self.input_index, self.related_input_index):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError('Candidate input indices must be nonnegative integers.')
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return TypeValidationSeverity.ERROR
+
+    @property
+    def path(self) -> TypeValidationPath | None:
+        return None if self.qualified_name is None else TypeValidationPath(self.qualified_name)
+
+
+class CanonicalModelConstructionError(ValueError):
+    """Direct-constructor intrinsic failure; factory returns its exact diagnostics."""
+    def __init__(self, diagnostics: tuple[CanonicalConstructionDiagnostic, ...]) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not CanonicalConstructionDiagnostic for d in diagnostics):
+            raise TypeError('Construction errors require immutable nonempty intrinsic diagnostics.')
+        self.diagnostics = diagnostics
+        super().__init__('Canonical model construction rejected by intrinsic membership invariants.')
+
+
+@_dataclass(frozen=True, slots=True)
+class CanonicalModel:
+    """One explicit context, selected exact versions, immutable semantic members.
+
+    TYPE-01 is absent: current members reuse TypeDataComposition and the existing
+    TYPE-07 five-value host capture, not a newly invented TypeDefinition class.
+    Only that declared seam is represented; no unknown facet/host payload is
+    advertised as complete semantic content. No concrete TypeRegistry is used.
+    """
+    scope: SemanticContextRef
+    definitions: tuple[CanonicalDefinition, ...] = ()
+    _exact: _Mapping[ElementVersionRef, CanonicalDefinition] = _field(init=False, repr=False, compare=False, hash=False)
+    __hash__ = None  # No model content/hash or serialized snapshot identity contract.
+
+    def __post_init__(self) -> None:
+        definitions, diagnostics = _canonical_members(self.scope, self.definitions)
+        if diagnostics:
+            raise CanonicalModelConstructionError(diagnostics)
+        exact = {ElementVersionRef(d.type_definition.id, d.type_definition.version): d for d in definitions}
+        object.__setattr__(self, 'definitions', definitions)
+        object.__setattr__(self, '_exact', _MappingProxyType(exact))
+
+    def find(self, reference: ElementVersionRef) -> CanonicalDefinition | None:
+        """Exact-only membership. Bare IDs/names/latest are never resolved."""
+        if type(reference) is not ElementVersionRef or type(reference.element_id) is not SemanticElementId or type(reference.version) is not SemanticVersion:
+            raise TypeError('Canonical lookup requires an exact existing ElementVersionRef.')
+        return self._exact.get(reference)
+
+    def contains(self, reference: ElementVersionRef) -> bool:
+        return self.find(reference) is not None
+
+    def list_definitions(self) -> tuple[CanonicalDefinition, ...]:
+        return self.definitions
+
+    @property
+    def references(self) -> tuple[ElementVersionRef, ...]:
+        return tuple(self._exact)
+
+    def same_membership(self, other: 'CanonicalModel') -> bool:
+        if type(other) is not CanonicalModel:
+            raise TypeError('Membership comparison requires another canonical snapshot.')
+        return self.scope == other.scope and self.references == other.references
+
+    def same_supported_content(self, other: 'CanonicalModel') -> bool:
+        """Only current declared host/data seam equality, never all semantic facets."""
+        if type(other) is not CanonicalModel:
+            raise TypeError('Supported-content comparison requires another canonical snapshot.')
+        return self.scope == other.scope and self.definitions == other.definitions
+
+
+@_dataclass(frozen=True, slots=True)
+class CanonicalModelConstructionResult:
+    model: CanonicalModel | None
+    diagnostics: tuple[CanonicalConstructionDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostics) not in (list, tuple) or any(type(d) is not CanonicalConstructionDiagnostic for d in self.diagnostics):
+            raise TypeError('Canonical result diagnostics require typed immutable members.')
+        object.__setattr__(self, 'diagnostics', tuple(self.diagnostics))
+        if (self.model is None) != bool(self.diagnostics) or self.model is not None and type(self.model) is not CanonicalModel:
+            raise ValueError('Canonical result requires a complete model or nonempty failure diagnostics.')
+
+    @property
+    def is_success(self) -> bool:
+        return self.model is not None
+
+
+@_dataclass(frozen=True, slots=True)
+class CanonicalModelFactory:
+    """Intrinsic construction only: accepts already constructed domain members."""
+    def create(self, scope: SemanticContextRef, definitions: tuple[CanonicalDefinition, ...] | list[CanonicalDefinition] = ()) -> CanonicalModelConstructionResult:
+        try:
+            return CanonicalModelConstructionResult(CanonicalModel(scope, definitions))
+        except CanonicalModelConstructionError as error:
+            return CanonicalModelConstructionResult(None, error.diagnostics)
+
+
+def _canonical_members(scope: SemanticContextRef, definitions: tuple[CanonicalDefinition, ...]) -> tuple[tuple[CanonicalDefinition, ...], tuple[CanonicalConstructionDiagnostic, ...]]:
+    """Reuse TYPE-07's capture/deep-value admission; never construct a registry."""
+    if type(scope) is not SemanticContextRef or type(scope.context_id) is not SemanticElementId:
+        return (), (CanonicalConstructionDiagnostic(CanonicalConstructionFailure.INVALID_SCOPE, 'One explicit canonical SemanticContextRef is required.'),)
+    if type(definitions) not in (tuple, list):
+        return (), (CanonicalConstructionDiagnostic(CanonicalConstructionFailure.INVALID_COLLECTION, 'Supply an explicit ordered collection of already constructed semantic members.'),)
+    definitions = tuple(definitions)
+    diagnostics: list[CanonicalConstructionDiagnostic] = []
+    exact: dict[ElementVersionRef, CanonicalDefinition] = {}
+    first: dict[ElementVersionRef, int] = {}
+    names: dict[QualifiedName, tuple[ElementVersionRef, int]] = {}
+    for index, definition in enumerate(definitions):
+        if type(definition) is not TypeDataComposition:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.UNSUPPORTED_DEFINITION, 'Only the current explicit TypeDataComposition definition carrier is supported; new kinds require an owned contract.', input_index=index))
+            continue
+        # Existing TYPE-07 helper reads each declared host property once and
+        # captures it into the existing frozen host value, preserving its policy.
+        owner = _registry_capture_owner(definition.type_definition)
+        if owner is None:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.INVALID_DEFINITION, 'Definition host must supply the five canonical typed semantic values.', input_index=index))
+            continue
+        reference = ElementVersionRef(owner.id, owner.version)
+        coordinates = {'reference': reference, 'qualified_name': owner.qualified_name, 'context': owner.context, 'input_index': index}
+        if owner.kind not in CANONICAL_DEFINITION_KINDS:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.UNSUPPORTED_DEFINITION, 'Unsupported semantic definition kind in the current canonical membership vocabulary.', **coordinates))
+            continue
+        if owner.context != scope:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.SCOPE_MISMATCH, 'Definition context is incompatible with the explicit canonical scope.', **coordinates))
+            continue
+        if not _registry_data_is_canonical(definition.data):
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.INVALID_DEFINITION, 'Only existing deeply immutable DataFacet/field/reference/constraint values may be retained.', **coordinates))
+            continue
+        entry = TypeDataComposition(owner, definition.data)
+        previous = exact.get(reference)
+        if previous is not None and previous != entry:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.EXACT_CONFLICT, 'The selected exact identity/version has conflicting declared semantic content.', **coordinates, related_reference=reference, related_input_index=first[reference]))
+        named = names.get(owner.qualified_name)
+        if named is not None and named[0].element_id != owner.id:
+            diagnostics.append(CanonicalConstructionDiagnostic(CanonicalConstructionFailure.QUALIFIED_NAME_COLLISION, 'Qualified name is owned by another selected identity within this context.', **coordinates, related_reference=named[0], related_input_index=named[1]))
+        if previous is None:
+            exact[reference], first[reference] = entry, index
+        names.setdefault(owner.qualified_name, (reference, index))
+    if diagnostics:
+        return (), tuple(diagnostics)
+    ordered = tuple(sorted(exact.values(), key=lambda d: (d.type_definition.id.value, d.type_definition.version)))
+    return ordered, ()
+
+
+__all__ += [
+    'CanonicalDefinition', 'CANONICAL_DEFINITION_KINDS', 'CanonicalModel',
+    'CanonicalModelFactory', 'CanonicalModelConstructionResult',
+    'CanonicalConstructionDiagnostic', 'CanonicalConstructionFailure',
+    'CanonicalModelConstructionError',
+]
