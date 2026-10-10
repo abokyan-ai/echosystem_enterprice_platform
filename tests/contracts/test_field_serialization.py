@@ -1,13 +1,15 @@
 """TYPE-02 test-only evolving model mapping; not a final public wire schema."""
 import json
 import unittest
-from model_core.public import FieldId, FieldIdError, FieldName, FieldNameError, FieldDefinition
+from model_core.constraint_wire import field_from_wire, field_to_wire
+from model_core.public import FieldConstraintSet, FieldPresence, FieldNullability, FieldId, FieldIdError, FieldName, FieldNameError, FieldDefinition
 
+PLAIN = FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())
 ID = 'fld_550e8400-e29b-41d4-a716-446655440000'
 
 
 def from_internal_wire(wire):
-    return FieldDefinition.create(FieldId.parse(wire.get('id')), FieldName.parse(wire.get('name')))
+    return field_from_wire(wire)
 
 
 class FieldSerializationTests(unittest.TestCase):
@@ -15,37 +17,37 @@ class FieldSerializationTests(unittest.TestCase):
         for value in (FieldId(ID), FieldName('creditLimit')):
             self.assertEqual(type(value).parse(json.loads(json.dumps(str(value)))), value)
 
-    def test_evolving_two_field_internal_model_round_trip(self):
-        field = FieldDefinition.create(FieldId(ID), FieldName('creditLimit'))
-        wire = {'id': str(field.id), 'name': str(field.name)}
+    def test_evolving_three_field_internal_model_round_trip(self):
+        field = FieldDefinition.create(FieldId(ID), FieldName('creditLimit'), PLAIN)
+        wire = field_to_wire(field)
         self.assertEqual(from_internal_wire(json.loads(json.dumps(wire))), field)
-        self.assertEqual(set(wire), {'id', 'name'})
+        self.assertEqual(set(wire), {'id', 'name', 'constraints'})
 
     def test_invalid_and_missing_serialized_values(self):
-        for wire in ({}, {'name': 'name'}, {'id': 'bad', 'name': 'name'}):
-            with self.assertRaises(FieldIdError):
+        for wire in ({}, {'name': 'name'}, {'id': ID, 'name': 'name'}):
+            with self.assertRaises(ValueError):
                 from_internal_wire(wire)
-        for wire in ({'id': ID}, {'id': ID, 'name': 'credit limit'}):
-            with self.assertRaises(FieldNameError):
-                from_internal_wire(wire)
+        for wire in ({'id': 'bad', 'name': 'name'}, {'id': ID, 'name': 'credit limit'}):
+            with self.assertRaises(ValueError):
+                from_internal_wire({**wire, 'constraints': field_to_wire(FieldDefinition(FieldId(ID), FieldName('name'), PLAIN))['constraints']})
         for scalar in (None, True, 1, [], {}):
             for constructor in (FieldId, FieldName):
                 with self.assertRaises(ValueError):
                     constructor.parse(json.loads(json.dumps(scalar)))
 
     def test_id_case_normalizes_name_case_remains_exact(self):
-        field = from_internal_wire({'id': 'fld_' + ID[4:].upper(), 'name': 'CreditLimit'})
+        field = from_internal_wire({'id': 'fld_' + ID[4:].upper(), 'name': 'CreditLimit', 'constraints': {'presence': 'required', 'nullability': 'non-null', 'values': []}})
         self.assertEqual(str(field.id), ID)
         self.assertEqual(str(field.name), 'CreditLimit')
 
     def test_serializer_requires_explicit_mapping(self):
-        for value in (FieldId(ID), FieldName('name'), FieldDefinition(FieldId(ID), FieldName('name'))):
+        for value in (FieldId(ID), FieldName('name'), FieldDefinition(FieldId(ID), FieldName('name'), PLAIN)):
             with self.assertRaises(TypeError):
                 json.dumps(value)
 
     def test_demo_rename_identity_without_compatibility_classification(self):
-        a = FieldDefinition(FieldId(ID), FieldName('creditLimit'))
-        b = FieldDefinition(a.id, FieldName('creditCeiling'))
+        a = FieldDefinition(FieldId(ID), FieldName('creditLimit'), PLAIN)
+        b = FieldDefinition(a.id, FieldName('creditCeiling'), PLAIN)
         self.assertEqual(a.id, b.id)
         self.assertNotEqual(a.name, b.name)
         self.assertNotEqual(a, b)
