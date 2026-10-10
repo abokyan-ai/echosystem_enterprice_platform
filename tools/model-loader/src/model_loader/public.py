@@ -8,6 +8,7 @@ from hashlib import sha256
 from model_authoring.public import (
     AuthoringModelDocument, AuthoringSchemaPath, AuthoringSchemaDiagnostic,
     AuthoringSchemaValidator,
+    CanonicalizationResult, CanonicalizationDiagnostic, CanonicalSourceAssociation,
 )
 
 MODULE_NAME = 'model-loader'
@@ -925,3 +926,61 @@ def decode_yaml(content: SourceContentResult, options: ModelLoadOptions) -> Sour
     finally:
         if loader is not None:
             loader.dispose()
+
+
+# MOD-05 location presentation: no loading/parsing/canonicalization is performed.
+@dataclass(frozen=True, slots=True)
+class LocatedCanonicalSourceAssociation:
+    association: CanonicalSourceAssociation
+    location: SourceLocation | None
+
+    def __post_init__(self) -> None:
+        if type(self.association) is not CanonicalSourceAssociation or self.location is not None and type(self.location) is not SourceLocation:
+            raise TypeError('Located canonical associations require existing typed values.')
+
+
+@dataclass(frozen=True, slots=True)
+class LocatedCanonicalizationDiagnostic:
+    diagnostic: CanonicalizationDiagnostic
+    location: SourceLocation | None
+    related_location: SourceLocation | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostic) is not CanonicalizationDiagnostic or any(value is not None and type(value) is not SourceLocation for value in (self.location, self.related_location)):
+            raise TypeError('Located transformation diagnostics require existing typed values.')
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalizationSourceLocations:
+    """External presentation only; identity/content equality remains in MOD-04."""
+    associations: tuple[LocatedCanonicalSourceAssociation, ...]
+    diagnostics: tuple[LocatedCanonicalizationDiagnostic, ...]
+
+    def __post_init__(self) -> None:
+        for name, expected in (('associations', LocatedCanonicalSourceAssociation), ('diagnostics', LocatedCanonicalizationDiagnostic)):
+            values = getattr(self, name)
+            if type(values) not in (tuple, list) or any(type(value) is not expected for value in values):
+                raise TypeError('Location sidecars require immutable typed member sequences.')
+            object.__setattr__(self, name, tuple(values))
+
+
+def locate_canonicalization(result: CanonicalizationResult, loaded: LoadedAuthoringDocument) -> CanonicalizationSourceLocations:
+    """Attach existing MOD-03 coordinates to the caller-paired MOD-05 result.
+
+    Caller must pair the exact loaded authoring snapshot that was canonicalized;
+    source tracking proves index/source alignment, not semantic transformation
+    provenance. No fallback to nearby nodes, inference or canonicalizer re-run.
+    Absent index/node => None; all semantic targets/diagnostics are preserved.
+    """
+    if type(result) is not CanonicalizationResult or type(loaded) is not LoadedAuthoringDocument:
+        raise TypeError('Location attachment requires typed transformation and loading results.')
+    index = loaded.locations
+    def location(path: AuthoringSchemaPath | None) -> SourceLocation | None:
+        return None if index is None or path is None else index.find(SourceNodePath.from_authoring_path(path))
+    return CanonicalizationSourceLocations(
+        tuple(LocatedCanonicalSourceAssociation(a, location(a.path)) for a in result.source_associations),
+        tuple(LocatedCanonicalizationDiagnostic(d, location(d.path), location(d.related_path)) for d in result.diagnostics),
+    )
+
+
+__all__ += ['LocatedCanonicalSourceAssociation', 'LocatedCanonicalizationDiagnostic', 'CanonicalizationSourceLocations', 'locate_canonicalization']

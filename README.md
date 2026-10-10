@@ -156,3 +156,11 @@ No Django/DRF endpoint or ORM model is introduced: no existing HTTP API requires
 Existing model-core now defines one-context immutable canonical snapshots with caller-selected exact versions, deterministic membership/order/lookup and atomic intrinsic construction results. The current closed payload reuses TypeDataComposition and TYPE-07 frozen host capture; full TypeDefinition and general SK-11 remain explicit missing prerequisites. No registry registration, authoring conversion, reference closure/latest selection, semantic validation orchestration, serialization/hash, framework or runtime behavior is added.
 
 See [contract and unexecuted Mini Sales usage](docs/model/canonical-model.md), [ADR-0026](docs/architecture/decisions/ADR-0026-canonical-model-contract.md), [single detailed archive](test-archive/MOD-04/MOD-04-deferred-tests.md) and [static record](docs/architecture/mod04-verification.md). New automated tests: **0**; executions: **0**; status **NOT_RUN — DEFERRED / NOT VERIFIED**. Stop at MOD-04.
+
+## MOD-05 — Explicit canonicalization
+
+`model_authoring.public.Canonicalizer` transforms one immutable authoring document plus explicit typed resolution bindings into the existing MOD-04 canonical model. It preserves stable IDs/versions/FieldIds, constructs existing fields/data/references/constraints and returns atomic failures with source paths and delegated diagnostics. The model-loader tooling can attach optional existing MOD-03 physical source locations as an external sidecar. No parsing, resolution, registry mutation, validation orchestration, compilation, persistence or endpoint is added.
+
+Current support is the existing five-value host/data seam, not a missing full TYPE-01 contract. General SK-11 is also absent; exact field-version pins fail rather than weaken identity-only TYPE-05. See [contract/usage](docs/model/canonicalizer.md), [ADR-0027](docs/architecture/decisions/ADR-0027-explicit-canonicalization-boundary.md) and [implementation/static evidence](docs/architecture/mod05-verification.md).
+
+[MOD-05 archive](test-archive/MOD-05/README.md): **143** documented scenarios, **0** tests implemented/executed, **NOT_RUN — DEFERRED / NOT VERIFIED**. The Mini Sales snippet was not executed. Static checks do not verify semantic behavior. Stop after MOD-05.
