@@ -255,6 +255,15 @@
       ],
       "profile": "django-rest-framework",
       "path_prefix": "adapters/http/"
+    },
+    "yaml": {
+      "distribution": "PyYAML",
+      "category": "parser",
+      "allowed_zones": [
+        "tooling"
+      ],
+      "profile": "model-source-loading",
+      "path_prefix": "tools/model-loader"
     }
   },
   "technology_decisions": {
@@ -295,6 +304,13 @@
       "allowed_zones": [
         "compiled-contracts",
         "runtime"
+      ]
+    },
+    "model-source-loading": {
+      "zone": "tooling",
+      "path_prefix": "tools/model-loader",
+      "allowed_zones": [
+        "model"
       ]
     }
   }

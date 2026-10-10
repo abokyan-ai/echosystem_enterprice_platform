@@ -1,0 +1,33 @@
+# MOD-02 illustrative input; loading/validation is deferred, not executed.
+schemaVersion: "1.0"
+context: sem_550e8400-e29b-41d4-a716-999999999999
+namespace: sales
+definitions:
+  - kind: type
+    id: sem_550e8400-e29b-41d4-a716-000000000001
+    name: Customer
+    version: "1.0.0"
+    facets:
+      - kind: data
+        fields:
+          - id: fld_550e8400-e29b-41d4-a716-000000000001
+            name: name
+            type: {kind: primitive, primitive: string}
+            constraints:
+              presence: required
+              nullability: non-null
+              values: [{kind: max-length, value: 200}]
+          - id: fld_550e8400-e29b-41d4-a716-000000000002
+            name: active
+            type: {kind: primitive, primitive: boolean}
+            constraints: {presence: required, nullability: non-null, values: []}
+          - id: fld_550e8400-e29b-41d4-a716-000000000003
+            name: creditLimit
+            type: {kind: primitive, primitive: decimal}
+            constraints:
+              presence: optional
+              nullability: non-null
+              values:
+                - {kind: minimum, value: "0"}
+                - {kind: precision, value: 18}
+                - {kind: scale, value: 2}

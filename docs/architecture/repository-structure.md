@@ -4,6 +4,7 @@
 | --- | --- |
 | `platform/kernel/semantic-kernel` | Implemented identity/name/context/version/reference/primitive/facet vocabulary; general SK-11 diagnostics remain open |
 | `platform/model/model-core` | Current field/data/constraint/reference/validation/registry contracts; full TYPE-01 remains open |
+| `tools/model-loader` | MOD-02 explicit memory/file source acquisition, strict JSON/YAML decoding, source traceability and ordered load results; tooling dependency only on model-authoring |
 | `platform/model/model-authoring` | MOD-01 schema projection and structural validation; depends only on Kernel/model-core, not compiler/runtime |
 | `platform/contracts/compiled-contracts` | Independent compiled artifact/semantic IR boundary; no schema implementation yet |
 | `platform/compiler/compiler-core` | Future resolution, validation and artifact construction |
@@ -22,7 +23,7 @@
 
 ## Future families and split triggers
 
-Keep semantic kernel small. Split identities/types/diagnostics only when ownership or independent contract evolution warrants it. MOD-01 now splits authoring representation into model-authoring; runtime must never import either implementation. Move source-format parsers into compiler-side adapters, not runtime.
+Keep semantic kernel small. Split identities/types/diagnostics only when ownership or independent contract evolution warrants it. MOD-01 now splits authoring representation into model-authoring; runtime must never import either implementation. MOD-02 owns source-format parsers in tools/model-loader, with narrow YAML approval; neutral authoring and runtime never import this tooling.
 
 Split compiler resolution/validation/artifact builder on distinct stable APIs. Keep compiled contracts independent of compiler implementation and runtime. Add runtime ports before persistence adapters; application composition supplies adapters explicitly. Add authorization as part of the action execution contract so humans and future agents take the same authorization path.
 

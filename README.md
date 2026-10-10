@@ -4,7 +4,7 @@ A contract-driven modular monolith with semantic identity/type contracts, immuta
 
 ## Quick start
 
-Prerequisite: Python 3.11+; Git for cloning. No pip dependencies, frontend framework, database, containers or services are required.
+Prerequisite: Python 3.11+; Git for cloning. MOD-02 YAML loading uses pinned PyYAML; no frontend framework, database, containers or services are required.
 
 ```sh
 git clone https://github.com/abokyan-ai/echosystem_enterprice_platform.git
@@ -15,7 +15,7 @@ python3 scripts/dev.py check:architecture
 python3 scripts/dev.py dependencies:json
 ```
 
-`install` validates the standard-library workspace; it does not install packages. Windows can use `python` instead of `python3`. Current static Make targets include `install`, `build` and `lint`. Comprehensive/runtime test commands exist but are deferred under [AGENTS.md](AGENTS.md); do not run them during implementation.
+`install` installs the explicit YAML parser dependency from requirements-model-loader.txt. Windows can use `python` instead of `python3`. Current static Make targets include `install`, `build` and `lint`. Comprehensive/runtime test commands exist but are deferred under [AGENTS.md](AGENTS.md); do not run them during implementation.
 
 Build checks syntax, architectural boundaries and importable public entry points, and creates `build/platform-workspace.zip` plus isolated bytecode. Generated output is not source. This is a source workspace, not a released PyPI distribution.
 
@@ -25,7 +25,7 @@ Build checks syntax, architectural boundaries and importable public entry points
 
 See [architecture](docs/architecture/README.md), [repository structure](docs/architecture/repository-structure.md), [dependency rules](docs/architecture/dependency-rules.md), [module guidelines](docs/architecture/module-guidelines.md) and [contributing](CONTRIBUTING.md).
 
-The repository contains eight physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
+The repository contains nine physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary, one input loader and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
 
 There is no runnable web/mobile UI in ARC-01. Reference Mini Sales is reserved for the first executable vertical slice.
 
@@ -138,3 +138,9 @@ Current and subsequent implementation tasks must preserve complete test specific
 The model-authoring module defines frozen authoring documents, type/data/field/constraint declarations and four explicit type-expression variants. Its pure structural validator accepts decoded abstract documents, rejects unknown shapes/properties/kinds and local duplicates, and preserves unresolved names, exact authored references and original declaration/literal order. It does not resolve names, generate canonical definitions, register types or invoke semantic applicability validation.
 
 Implementation follows current Python contracts; TYPE-01/SK-11/TYPE-08 and full SK-09 integration remain open. The eight-module inventory includes authoring, without changing the five foundation activation markers. [Mini Sales source](examples/authoring/mini-sales.json) is included but not executed. Testing status: **DEFERRED / NOT VERIFIED**, deferred-suite executions **0**. See [schema/assessment](docs/model/authoring-schema.md), [ADR-0023](docs/architecture/decisions/ADR-0023-authoring-schema-representation-boundary.md), [task archive](test-archive/MOD-01/README.md) and [static-check record](docs/architecture/mod01-verification.md). No next stage is started automatically.
+
+## MOD-02: Model Loader
+
+Explicit memory/file sources feed strict JSON or bounded PyYAML SafeLoader 1.1 decoding, then the existing MOD-01 structural validator. Source-associated immutable results preserve unresolved declarations; ordered batches distinguish all/partial/failed/empty outcomes and reject every duplicate source-ID submission. No semantic lookup, registration, canonicalization, compilation or runtime execution is performed.
+
+See [loading contract and Mini Sales usage](docs/model/model-loader.md), [ADR-0024](docs/architecture/decisions/ADR-0024-model-source-loading-boundary.md), [archive](test-archive/MOD-02/README.md) and [static record](docs/architecture/mod02-verification.md). YAML 1.1 coercions, filesystem trust/resource limits and provisional SK-11 diagnostics are documented limitations. Deferred executions: **0**; status **DEFERRED / NOT VERIFIED**. No loading examples were run; stop at MOD-02.

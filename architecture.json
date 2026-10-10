@@ -146,6 +146,28 @@
       "external_dependencies": []
     },
     {
+      "name": "model-loader",
+      "path": "tools/model-loader",
+      "package": "model_loader",
+      "allowed_dependencies": [
+        "model-authoring"
+      ],
+      "zone": "tooling",
+      "owner": "model input tooling maintainers",
+      "language": "python",
+      "public_api": [
+        "model_loader.public"
+      ],
+      "external_dependencies": [
+        "yaml"
+      ],
+      "technology_profile": "model-source-loading",
+      "dependency_categories": {
+        "model-authoring": "api"
+      },
+      "activation_dependencies": []
+    },
+    {
       "name": "platform-cli",
       "path": "tools/platform-cli",
       "package": "platform_cli",
