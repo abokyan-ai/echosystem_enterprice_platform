@@ -1,9 +1,10 @@
 """Pure semantic identity, naming and reference contracts, independent of infrastructure."""
 from dataclasses import dataclass as _dataclass, field as _field
 import re as _re
+from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -250,3 +251,26 @@ class SemanticContextRef:
 
     def __str__(self) -> str:
         return str(self.context_id)
+
+
+class SemanticElement(_Protocol):
+    """Minimal read-only contract for a first-class semantic definition snapshot.
+
+    Implementations own local construction invariants and snapshot equality.
+    Context is explicit and required; no name-derived ownership or resolution
+    is implied. This contract is not a business instance or runtime execution.
+    """
+    @property
+    def id(self) -> SemanticElementId:
+        """Stable semantic identity, independent of name/context evolution."""
+        ...
+
+    @property
+    def qualified_name(self) -> QualifiedName:
+        """Canonical semantic name of this definition snapshot."""
+        ...
+
+    @property
+    def context(self) -> SemanticContextRef:
+        """Explicit reference to the intended meaning context; not resolved here."""
+        ...

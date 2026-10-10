@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class SemanticIdentityBoundaryTests(unittest.TestCase):
     def test_public_identity_is_owned_by_existing_kernel(self):
         self.assertEqual(SemanticElementId.__module__, "semantic_kernel.public")
-        self.assertEqual(set(public.__all__), {"MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError"})
+        self.assertEqual(set(public.__all__), {"MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement"})
 
     def test_kernel_has_only_foundational_imports_and_no_module_dependencies(self):
         model = discover(ROOT)
@@ -19,5 +19,5 @@ class SemanticIdentityBoundaryTests(unittest.TestCase):
         self.assertEqual(kernel.metadata["allowed_dependencies"], [])
         self.assertEqual(model.graph("observed")[kernel.id], set())
         imports = {name.split(".")[0] for source in model.sources if source.owner == kernel.id for name, line in source.targets}
-        self.assertEqual(imports, {"dataclasses", "re"})
+        self.assertEqual(imports, {"dataclasses", "re", "typing"})
         self.assertEqual(execute(model, rule_ids=("ARCH-SK-001", "ARCH-SK-002", "ARCH-SK-003"))["summary"]["status"], "HEALTHY")

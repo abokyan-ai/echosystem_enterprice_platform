@@ -177,4 +177,7 @@ def default_registry():
     def context_ref_owner(model, context):
         return [ArchitectureViolation("ARCH-SK-CTX-001", Severity.CRITICAL, "SemanticContextRef definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class SemanticContextRef", "Use semantic_kernel.public.SemanticContextRef; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "SemanticContextRef" and source.owner != "semantic-kernel"]
     registry.register(ArchitectureRule("ARCH-SK-CTX-001", "Semantic context reference ownership", "SemanticContextRef class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", context_ref_owner))
+    def semantic_element_owner(model, context):
+        return [ArchitectureViolation("ARCH-SK-ELEM-001", Severity.CRITICAL, "SemanticElement definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class SemanticElement", "Use semantic_kernel.public.SemanticElement; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "SemanticElement" and source.owner != "semantic-kernel"]
+    registry.register(ArchitectureRule("ARCH-SK-ELEM-001", "Semantic root contract ownership", "SemanticElement class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", semantic_element_owner))
     return registry

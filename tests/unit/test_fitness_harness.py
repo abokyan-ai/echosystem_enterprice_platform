@@ -180,7 +180,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all(m.public_api and m.internal_api and m.zone for m in model.modules))
         report = execute(model, as_of=TODAY)
         self.assertEqual(report["summary"]["status"], "HEALTHY")
-        self.assertEqual(report["summary"]["rules_executed"], 43)
+        self.assertEqual(report["summary"]["rules_executed"], 44)
 
     def test_existing_governance_evaluated_once_for_all_rules(self):
         from architecture_fitness.governance import evaluate_governance
@@ -188,7 +188,7 @@ class HarnessTests(unittest.TestCase):
         with patch("architecture_fitness.rules.evaluate_governance", wraps=evaluate_governance) as evaluator:
             report = execute(model, as_of=TODAY)
         self.assertEqual(evaluator.call_count, 1)
-        self.assertEqual(report["summary"]["rules_executed"], 43)
+        self.assertEqual(report["summary"]["rules_executed"], 44)
 
 
 class BootstrapFitnessTests(unittest.TestCase):
@@ -322,4 +322,30 @@ class SemanticContextRefFitnessTests(unittest.TestCase):
         model = discover(ROOT)
         source = next(s for s in model.sources if s.owner == 'semantic-kernel' and s.file.endswith('/public.py'))
         self.assertIn('SemanticContextRef', [name for name, line in source.classes])
+        self.assertEqual(model.discovery_metadata['scan_passes'], 1)
+
+
+class SemanticElementFitnessTests(unittest.TestCase):
+    def test_semantic_root_cannot_be_defined_outside_kernel(self):
+        for owner, zone in (('platform-cli', 'tooling'), ('runtime', 'runtime'), ('compiler', 'compiler')):
+            model = fixture((module(owner, zone),), (Source('other/public.py', owner, classes=(('SemanticElement', 13),)),))
+            report = execute(model, rule_ids=('ARCH-SK-ELEM-001',))
+            self.assertEqual(report['summary']['status'], 'FAILED')
+            self.assertEqual(report['violations'][0]['line'], 13)
+
+    def test_semantic_root_allowed_in_kernel(self):
+        model = fixture((module('semantic-kernel', 'kernel'),), (Source('platform/kernel/public.py', 'semantic-kernel', classes=(('SemanticElement', 3),)),))
+        self.assertEqual(execute(model, rule_ids=('ARCH-SK-ELEM-001',))['summary']['status'], 'HEALTHY')
+
+    def test_hypothetical_root_rejects_runtime_compiler_database_and_ui_imports(self):
+        for target in ('runtime.public', 'compiler.public', 'django.db.models', 'react'):
+            dependencies = (target.split('.')[0],) if target in ('runtime.public', 'compiler.public') else ()
+            model = fixture((module('semantic-kernel', 'kernel', dependencies), module('runtime', 'runtime'), module('compiler', 'compiler')), (Source('platform/kernel/public.py', 'semantic-kernel', ((target, 5),), classes=(('SemanticElement', 3),)),))
+            report = execute(model, rule_ids=('ARCH-SK-002', 'ARCH-SK-003'))
+            self.assertEqual(report['summary']['status'], 'FAILED')
+
+    def test_semantic_root_discovery_reuses_single_ast_pass(self):
+        model = discover(ROOT)
+        source = next(s for s in model.sources if s.owner == 'semantic-kernel' and s.file.endswith('/public.py'))
+        self.assertIn('SemanticElement', [name for name, line in source.classes])
         self.assertEqual(model.discovery_metadata['scan_passes'], 1)
