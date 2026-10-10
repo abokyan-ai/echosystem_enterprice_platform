@@ -15,7 +15,7 @@ class FieldBoundaryTests(unittest.TestCase):
             self.assertEqual(value.__module__, 'model_core.public')
         model = discover(ROOT)
         self.assertEqual(model.graph('observed')['semantic-kernel'], set())
-        self.assertEqual(model.graph('observed')['model-core'], set())
+        self.assertEqual(model.graph('observed')['model-core'], {'semantic-kernel'})
         self.assertEqual(execute(model)['summary']['status'], 'HEALTHY')
 
     def test_snapshot_contains_only_two_model_owned_typed_members(self):
@@ -27,4 +27,4 @@ class FieldBoundaryTests(unittest.TestCase):
     def test_model_public_boundary_has_only_foundational_imports(self):
         model = discover(ROOT)
         imports = {name.split('.')[0] for source in model.sources if source.owner == 'model-core' for name, line in source.targets}
-        self.assertEqual(imports, {'dataclasses', 're'})
+        self.assertEqual(imports, {'dataclasses', 're', 'semantic_kernel'})

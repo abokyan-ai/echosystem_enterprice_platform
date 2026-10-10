@@ -1,9 +1,10 @@
 """Pure model contracts for owned semantic structural members."""
 from dataclasses import dataclass as _dataclass
 import re as _re
+from semantic_kernel.public import FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
 
 MODULE_NAME = "model-core"
-__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError"]
+__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition"]
 
 # Same UUIDv4 representation strategy as SK-01, with distinct model-owned intent.
 _FIELD_ID = _re.compile(r"fld_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -121,3 +122,90 @@ class FieldDefinition:
     def create(cls, id: FieldId, name: FieldName) -> "FieldDefinition":
         """Construct from typed values without reparsing, generation or lookup."""
         return cls(id, name)
+
+
+class DataFacetError(ValueError):
+    """Deterministic local structural/composition diagnostic without rejected input."""
+    def __init__(self, code: str, message: str, field_index: int | None = None, previous_index: int | None = None):
+        self.code = code
+        self.message = message
+        self.field_index = field_index
+        self.previous_index = previous_index
+        super().__init__(f"{code}: {message}")
+
+
+DATA_FACET_APPLICABILITY = FacetApplicability(FacetKinds.DATA, frozenset({SemanticElementKinds.TYPE_DEFINITION}))
+
+
+@_dataclass(frozen=True, slots=True)
+class DataFacet:
+    """Ordered immutable structural membership; fixed data concern, not instance values.
+
+    Local uniqueness/case portability only, without type/constraint/projection rules.
+    """
+    fields: tuple[FieldDefinition, ...]
+
+    def __post_init__(self):
+        if type(self.fields) not in (tuple, list):
+            raise DataFacetError("TYPE-DATA-004", "Fields require an explicit ordered list or tuple of FieldDefinition snapshots.")
+        fields = tuple(self.fields)
+        ids = {}
+        names = {}
+        folded = {}
+        for index, field in enumerate(fields):
+            if not isinstance(field, FieldDefinition):
+                raise DataFacetError("TYPE-DATA-004", "DataFacet contains an invalid or null FieldDefinition.", index)
+            if field.id in ids:
+                raise DataFacetError("TYPE-DATA-001", "Duplicate FieldId in DataFacet.", index, ids[field.id])
+            if field.name in names:
+                raise DataFacetError("TYPE-DATA-002", "Duplicate FieldName in DataFacet.", index, names[field.name])
+            key = str(field.name).lower()  # FieldName grammar is ASCII; locale-independent.
+            if key in folded:
+                raise DataFacetError("TYPE-DATA-003", "Field-name portability collision in DataFacet.", index, folded[key])
+            ids[field.id] = index
+            names[field.name] = index
+            folded[key] = index
+        object.__setattr__(self, "fields", fields)
+
+    @property
+    def kind(self) -> FacetKind:
+        return FacetKinds.DATA
+
+    @classmethod
+    def create(cls, fields: tuple[FieldDefinition, ...] | list[FieldDefinition]) -> "DataFacet":
+        return cls(fields)
+
+    def find_by_id(self, id: FieldId) -> FieldDefinition | None:
+        """Exact typed lookup; missing returns None, never an approximate match."""
+        if not isinstance(id, FieldId):
+            raise DataFacetError("TYPE-DATA-004", "ID lookup requires a validated FieldId.")
+        return next((field for field in self.fields if field.id == id), None)
+
+    def find_by_name(self, name: FieldName) -> FieldDefinition | None:
+        """Case-sensitive typed lookup; collision validation does not change equality."""
+        if not isinstance(name, FieldName):
+            raise DataFacetError("TYPE-DATA-004", "Name lookup requires a validated FieldName.")
+        return next((field for field in self.fields if field.name == name), None)
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeDataComposition:
+    """Minimal explicit host/data association, without duplicate structural fields.
+
+    Host must supply the five typed SemanticElement properties and type-definition
+    kind. Concrete hosts own immutable snapshot invariants; this wrapper retains
+    their reference rather than implementing TypeDefinition or copying its state.
+    None means absent; DataFacet(()) means explicitly empty. Future general facet
+    hosting requires its own design, not an untyped map or merge here.
+    """
+    type_definition: SemanticElement
+    data: DataFacet | None = None
+
+    def __post_init__(self):
+        expected = (("id", SemanticElementId), ("qualified_name", QualifiedName), ("context", SemanticContextRef), ("kind", SemanticElementKind), ("version", SemanticVersion))
+        if any(not isinstance(getattr(self.type_definition, name, None), value_type) for name, value_type in expected):
+            raise DataFacetError("TYPE-DATA-006", "Type data composition requires all five typed SemanticElement properties.")
+        if self.type_definition.kind not in DATA_FACET_APPLICABILITY.allowed_element_kinds:
+            raise DataFacetError("TYPE-DATA-006", "DataFacet v0 is applicable only to type-definition hosts.")
+        if self.data is not None and not isinstance(self.data, DataFacet):
+            raise DataFacetError("TYPE-DATA-005", "Exactly one DataFacet or None is permitted; duplicate facets and implicit merging are forbidden.")

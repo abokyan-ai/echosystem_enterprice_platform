@@ -103,3 +103,7 @@ SK-10 adds open typed `FacetKind`, fourteen immutable Core `FacetKinds`, a one-p
 ## Structural field definitions
 
 TYPE-02 adds model-owned immutable `FieldId`, case-sensitive local `FieldName` and minimal `FieldDefinition(id, name)`. Stable identity survives rename; type/constraints and physical projections remain deferred. See [field contract](docs/model/field-definition.md), [ADR-0017](docs/architecture/decisions/ADR-0017-field-identity-and-local-naming.md) and [verification](docs/architecture/type02-verification.md). SK-09, SK-11 and TYPE-01 are absent; this independent stage does not claim them complete. Integrate DataFacet only after those prerequisites.
+
+## Structural data facet
+
+TYPE-03 adds immutable ordered `DataFacet`, fixed `data` kind, local ID/name/case-collision validation and exact typed lookup. `TypeDataComposition` provides a minimal explicit single-facet association through the existing root contract; production TYPE-01 is still missing, so integration is tested with an immutable fixture. See [DataFacet contract](docs/model/data-facet.md), [ADR-0018](docs/architecture/decisions/ADR-0018-data-facet-structural-composition.md) and [verification](docs/architecture/type03-verification.md). Complete missing prerequisites before production type integration; then TYPE-04/05/06.
