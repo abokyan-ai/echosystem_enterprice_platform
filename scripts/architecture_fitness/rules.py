@@ -168,4 +168,7 @@ def default_registry():
                 findings.extend(replace(v, rule_id="ARCH-SK-003") for v in violation.evaluate(model, context) if v.source == "semantic-kernel" and v.file == filename and v.target == finding["target"])
         return list({(v.file, v.line, v.target, v.message): v for v in findings}.values())
     registry.register(ArchitectureRule("ARCH-SK-003", "Kernel public contract neutrality", "Kernel public source must not import forbidden infrastructure or internal surfaces", "public-api", Severity.CRITICAL, "semantic-kernel public.py", kernel_public))
+    def namespace_owner(model, context):
+        return [ArchitectureViolation("ARCH-SK-NS-001", Severity.CRITICAL, "Namespace definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class Namespace", "Use semantic_kernel.public.Namespace; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "Namespace" and source.owner != "semantic-kernel"]
+    registry.register(ArchitectureRule("ARCH-SK-NS-001", "Semantic namespace ownership", "Namespace class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", namespace_owner))
     return registry

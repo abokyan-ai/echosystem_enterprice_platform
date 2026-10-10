@@ -77,3 +77,5 @@ Health/modules inspect a newly built local host, not another process. Full archi
 ## Semantic Kernel identity
 
 SK-01 introduces the immutable `semantic_kernel.public.SemanticElementId`: an opaque `sem_<UUIDv4>` value with strict validation, canonical lowercase output, safe parsing and value equality/hash semantics. JSON boundaries map it explicitly to a scalar string. See [semantic identity](docs/kernel/semantic-element-id.md) and [ADR-0008](docs/architecture/decisions/ADR-0008-semantic-element-identity.md). Full fitness now enforces 40 rules; no namespace, semantic element, generator, persistence or runtime feature is introduced.
+
+SK-02 adds immutable `semantic_kernel.public.Namespace` with dot-separated ASCII segments, lowercase canonicalization, precise validation, scalar round trips and small naming-only parent/child helpers. See [namespace contract](docs/kernel/namespace.md), [ADR-0009](docs/architecture/decisions/ADR-0009-semantic-namespace-naming.md) and [verification](docs/architecture/sk02-verification.md). Full fitness now enforces 41 rules, including static Namespace ownership; QualifiedName follows in SK-03.
