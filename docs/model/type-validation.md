@@ -1,5 +1,7 @@
 # TYPE-06: Type Validation Rules
 
+Current integration: [TYPE-07 TypeRegistry](type-registry.md) now supplies this unchanged TypeLookup, directly for zero/one-version identities and through an explicitly bound selected-only view for multiversion snapshots. Historical deferred references below describe the TYPE-06 stage boundary.
+
 ## Inspected state and actual integration boundary
 
 TYPE-02..05 provide immutable fields, DataFacet, explicit constraints and closed PrimitiveTypeRef/SemanticTypeRef references. Constructors already reject malformed values, missing field members, local duplicates/case collisions, repeated constraint kinds and inverted local bounds. There were no cross-object validation helpers, TypeLookup, Diagnostic/SemanticPath contracts or pipeline to reconcile. Existing checks stay in constructors; no duplicate algorithms are moved/copied into validation.

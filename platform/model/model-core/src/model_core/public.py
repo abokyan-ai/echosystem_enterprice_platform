@@ -1,13 +1,14 @@
 """Pure model contracts for owned semantic structural members."""
-from dataclasses import dataclass as _dataclass
+from dataclasses import dataclass as _dataclass, field as _field
 import re as _re
 from enum import Enum as _Enum
 from decimal import Decimal as _Decimal
-from typing import Protocol as _Protocol
-from semantic_kernel.public import PrimitiveTypes, PrimitiveType, ElementRef, FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
+from typing import Protocol as _Protocol, Mapping as _Mapping
+from types import MappingProxyType as _MappingProxyType
+from semantic_kernel.public import Namespace, ElementVersionRef, PrimitiveTypes, PrimitiveType, ElementRef, FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
 
 MODULE_NAME = "model-core"
-__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet", "TypeRef", "TypeRefKind", "PrimitiveTypeRef", "SemanticTypeRef", "TypeRefError", "TypeLookup", "TypeValidationContext", "TypeValidationRule", "TypeValidationResult", "TypeValidator", "TypeValidationDiagnostic", "TypeValidationSeverity", "TypeValidationPath", "FieldConstraintValidationRule", "SemanticReferenceValidationRule", "primitive_constraint_kinds", "StructuralTypeValidationRule"]
+__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet", "TypeRef", "TypeRefKind", "PrimitiveTypeRef", "SemanticTypeRef", "TypeRefError", "TypeLookup", "TypeValidationContext", "TypeValidationRule", "TypeValidationResult", "TypeValidator", "TypeValidationDiagnostic", "TypeValidationSeverity", "TypeValidationPath", "FieldConstraintValidationRule", "SemanticReferenceValidationRule", "primitive_constraint_kinds", "StructuralTypeValidationRule", "TypeRegistry", "TypeRegistrationResult", "TypeRegistrationOutcome", "TypeRegistrationFailure", "TypeRegistrationDiagnostic", "TypeRegistryLookup", "TypeRegistryAmbiguityError"]
 
 # Same UUIDv4 representation strategy as SK-01, with distinct model-owned intent.
 _FIELD_ID = _re.compile(r"fld_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -790,3 +791,269 @@ class TypeValidator:
             result = TypeValidationResult(rule.validate(type_definition, context))
             diagnostics.extend(result.diagnostics)
         return TypeValidationResult(diagnostics)
+
+
+# TYPE-07: context-scoped immutable registration, separate from TYPE-06 judgment.
+class TypeRegistrationFailure(_Enum):
+    INVALID_REGISTRY_ENTRY = 'TYPE-REG-001'
+    UNSUPPORTED_ELEMENT_KIND = 'TYPE-REG-002'
+    SCOPE_MISMATCH = 'TYPE-REG-003'
+    DUPLICATE_CONFLICT = 'TYPE-REG-004'
+    QUALIFIED_NAME_COLLISION = 'TYPE-REG-005'
+
+
+class TypeRegistrationOutcome(_Enum):
+    REGISTERED = 'registered'
+    ALREADY_REGISTERED = 'already-registered'
+    REJECTED = 'rejected'
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeRegistrationDiagnostic:
+    """Registration-specific typed diagnostic seam pending SK-11, not a framework."""
+    code: TypeRegistrationFailure
+    message: str
+    reference: ElementVersionRef | None = None
+    qualified_name: QualifiedName | None = None
+    context: SemanticContextRef | None = None
+
+    def __post_init__(self):
+        if type(self.code) is not TypeRegistrationFailure or type(self.message) is not str or not self.message:
+            raise TypeError('Registration diagnostics require a supported code and message.')
+        for value, expected in ((self.reference, ElementVersionRef), (self.qualified_name, QualifiedName), (self.context, SemanticContextRef)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Registration diagnostic coordinates require canonical typed values.')
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return TypeValidationSeverity.ERROR
+
+    @property
+    def path(self) -> TypeValidationPath | None:
+        return None if self.qualified_name is None else TypeValidationPath(self.qualified_name)
+
+
+@_dataclass(frozen=True, slots=True)
+class _RegisteredTypeElement:
+    """Five-property immutable capture of the provisional host; not full TYPE-01."""
+    id: SemanticElementId
+    qualified_name: QualifiedName
+    context: SemanticContextRef
+    kind: SemanticElementKind
+    version: SemanticVersion
+
+
+class TypeRegistryAmbiguityError(ValueError):
+    """Bare-ID TypeLookup cannot express several versions; bind an explicit view."""
+    def __init__(self, references: tuple[ElementVersionRef, ...]):
+        self.code = 'TYPE-REG-006'
+        self.references = references
+        super().__init__('TYPE-REG-006: Multiple registered versions; supply an explicit version-bound lookup view.')
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeRegistry:
+    """One context, copy-on-write indexes, no latest/default/version inference.
+
+    Stores current TypeDataComposition contracts, capturing the five host values
+    to prevent external Protocol-host mutation. Known facets have structural
+    equality. Unknown host extension members are outside this provisional seam.
+    Names belong to recorded versions, with historical ownership reserved.
+    """
+    context: SemanticContextRef
+    _exact_index: _Mapping[ElementVersionRef, TypeDataComposition] = _field(init=False, repr=False, compare=True, default_factory=lambda: _MappingProxyType({}))
+    _identity_index: _Mapping[SemanticElementId, tuple[TypeDataComposition, ...]] = _field(init=False, repr=False, compare=False, default_factory=lambda: _MappingProxyType({}))
+    _name_index: _Mapping[QualifiedName, tuple[TypeDataComposition, ...]] = _field(init=False, repr=False, compare=False, default_factory=lambda: _MappingProxyType({}))
+
+    def __post_init__(self):
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId:
+            raise TypeError('Registry requires one explicit canonical semantic context.')
+
+    @property
+    def entries(self) -> tuple[TypeDataComposition, ...]:
+        """ID scalar order then existing numeric SemanticVersion order."""
+        return tuple(self._exact_index.values())
+
+    def register(self, definition: TypeDataComposition) -> 'TypeRegistrationResult':
+        """Return a new snapshot on success; expected failures retain this snapshot.
+
+        Only registration structure is checked. No validator execution, repair,
+        serialization/hash comparison or reference traversal takes place.
+        """
+        if type(definition) is not TypeDataComposition:
+            owner = _registry_capture_owner(definition)
+            code = TypeRegistrationFailure.UNSUPPORTED_ELEMENT_KIND if owner is not None and owner.kind != SemanticElementKinds.TYPE_DEFINITION else TypeRegistrationFailure.INVALID_REGISTRY_ENTRY
+            return _registration_rejected(self, code, 'Expected the existing TypeDataComposition registration contract.', owner)
+        owner = _registry_capture_owner(definition.type_definition)
+        if owner is None:
+            return _registration_rejected(self, TypeRegistrationFailure.INVALID_REGISTRY_ENTRY, 'Expected all five canonical typed semantic identity properties.')
+        if owner.kind != SemanticElementKinds.TYPE_DEFINITION:
+            return _registration_rejected(self, TypeRegistrationFailure.UNSUPPORTED_ELEMENT_KIND, 'Only type-definition hosts may be registered.', owner)
+        if owner.context != self.context:
+            return _registration_rejected(self, TypeRegistrationFailure.SCOPE_MISMATCH, 'Definition context differs from registry scope.', owner)
+        if not _registry_data_is_canonical(definition.data):
+            return _registration_rejected(self, TypeRegistrationFailure.INVALID_REGISTRY_ENTRY, 'Only canonical immutable DataFacet/field/constraint snapshots may be registered.', owner)
+        entry = TypeDataComposition(owner, definition.data)
+        reference = ElementVersionRef(owner.id, owner.version)
+        existing = self._exact_index.get(reference)
+        if existing is not None:
+            if existing == entry:
+                return TypeRegistrationResult(self, TypeRegistrationOutcome.ALREADY_REGISTERED)
+            return _registration_rejected(self, TypeRegistrationFailure.DUPLICATE_CONFLICT, 'The exact identity/version already has different registration content.', owner)
+        named = self._name_index.get(owner.qualified_name, ())
+        if named and named[0].type_definition.id != owner.id:
+            return _registration_rejected(self, TypeRegistrationFailure.QUALIFIED_NAME_COLLISION, 'Qualified name is owned by another identity in this context.', owner)
+        return TypeRegistrationResult(_registry_snapshot(self.context, (*self.entries, entry)), TypeRegistrationOutcome.REGISTERED)
+
+    def find_by_id(self, id: SemanticElementId) -> tuple[TypeDataComposition, ...]:
+        if type(id) is not SemanticElementId:
+            raise TypeError('ID lookup requires a canonical SemanticElementId.')
+        return self._identity_index.get(id, ())
+
+    def find_by_version(self, reference: ElementVersionRef) -> TypeDataComposition | None:
+        if type(reference) is not ElementVersionRef or type(reference.element_id) is not SemanticElementId or type(reference.version) is not SemanticVersion:
+            raise TypeError('Exact lookup requires a canonical ElementVersionRef.')
+        return self._exact_index.get(reference)
+
+    def find_by_qualified_name(self, name: QualifiedName) -> tuple[TypeDataComposition, ...]:
+        if type(name) is not QualifiedName or type(name.namespace) is not Namespace:
+            raise TypeError('Name lookup requires a canonical QualifiedName.')
+        return self._name_index.get(name, ())
+
+    def list_versions(self, id: SemanticElementId) -> tuple[SemanticVersion, ...]:
+        return tuple(entry.type_definition.version for entry in self.find_by_id(id))
+
+    def contains(self, reference: ElementVersionRef) -> bool:
+        return self.find_by_version(reference) is not None
+
+    def find(self, reference: ElementRef) -> SemanticElement | None:
+        """TYPE-06 lookup only when an identity has zero or one version.
+
+        Several versions are an explicit orchestration error, never missing or
+        latest. Use bind_versions for a total unambiguous TypeLookup view.
+        """
+        if type(reference) is not ElementRef or type(reference.element_id) is not SemanticElementId:
+            raise TypeError('TypeLookup requires a canonical identity-only ElementRef.')
+        entries = self.find_by_id(reference.element_id)
+        if len(entries) > 1:
+            raise TypeRegistryAmbiguityError(tuple(ElementVersionRef(e.type_definition.id, e.type_definition.version) for e in entries))
+        return None if not entries else entries[0].type_definition
+
+    def bind_versions(self, references: tuple[ElementVersionRef, ...] | list[ElementVersionRef]) -> 'TypeRegistryLookup':
+        """Explicit selected-only view; unselected identities are absent in it."""
+        return TypeRegistryLookup(self, references)
+
+
+def _registry_capture_owner(source: SemanticElement) -> _RegisteredTypeElement | None:
+    values = tuple(getattr(source, name, None) for name in ('id', 'qualified_name', 'context', 'kind', 'version'))
+    expected = (SemanticElementId, QualifiedName, SemanticContextRef, SemanticElementKind, SemanticVersion)
+    if any(type(value) is not value_type for value, value_type in zip(values, expected)) or type(values[1].namespace) is not Namespace or type(values[2].context_id) is not SemanticElementId:
+        return None
+    return _RegisteredTypeElement(*values)
+
+
+def _registry_data_is_canonical(data: DataFacet | None) -> bool:
+    if data is None:
+        return True
+    if type(data) is not DataFacet or type(data.fields) is not tuple:
+        return False
+    for field in data.fields:
+        if type(field) is not FieldDefinition or type(field.id) is not FieldId or type(field.name) is not FieldName or type(field.constraints) is not FieldConstraintSet:
+            return False
+        if type(field.type) is PrimitiveTypeRef:
+            if type(field.type.primitive) is not PrimitiveType:
+                return False
+        elif type(field.type) is SemanticTypeRef:
+            if type(field.type.target) is not ElementRef or type(field.type.target.element_id) is not SemanticElementId:
+                return False
+        else:
+            return False
+        constraints = field.constraints
+        if type(constraints.presence) is not FieldPresence or type(constraints.nullability) is not FieldNullability or type(constraints.value_constraints) is not tuple:
+            return False
+        for value in constraints.value_constraints:
+            if type(value) not in (MinLengthConstraint, MaxLengthConstraint, MinimumConstraint, MaximumConstraint, PatternConstraint, PrecisionConstraint, ScaleConstraint):
+                return False
+            if type(value) in (MinimumConstraint, MaximumConstraint) and type(value.value) is not NumericConstraintValue:
+                return False
+    return True
+
+
+def _registry_snapshot(context: SemanticContextRef, entries: tuple[TypeDataComposition, ...]) -> TypeRegistry:
+    ordered = sorted(entries, key=lambda e: (str(e.type_definition.id), e.type_definition.version))
+    exact = {}
+    identities = {}
+    names = {}
+    for entry in ordered:
+        owner = entry.type_definition
+        exact[ElementVersionRef(owner.id, owner.version)] = entry
+        identities.setdefault(owner.id, []).append(entry)
+        names.setdefault(owner.qualified_name, []).append(entry)
+    registry = TypeRegistry(context)
+    object.__setattr__(registry, '_exact_index', _MappingProxyType(exact))
+    object.__setattr__(registry, '_identity_index', _MappingProxyType({key: tuple(value) for key, value in identities.items()}))
+    object.__setattr__(registry, '_name_index', _MappingProxyType({key: tuple(value) for key, value in names.items()}))
+    return registry
+
+
+def _registration_rejected(registry: TypeRegistry, code: TypeRegistrationFailure, message: str, owner: _RegisteredTypeElement | None = None) -> 'TypeRegistrationResult':
+    diagnostic = TypeRegistrationDiagnostic(code, message, None if owner is None else ElementVersionRef(owner.id, owner.version), None if owner is None else owner.qualified_name, None if owner is None else owner.context)
+    return TypeRegistrationResult(registry, TypeRegistrationOutcome.REJECTED, (diagnostic,))
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeRegistrationResult:
+    registry: TypeRegistry
+    outcome: TypeRegistrationOutcome
+    diagnostics: tuple[TypeRegistrationDiagnostic, ...] = ()
+
+    def __post_init__(self):
+        if type(self.registry) is not TypeRegistry or type(self.outcome) is not TypeRegistrationOutcome:
+            raise TypeError('Registration result requires a typed registry and outcome.')
+        if type(self.diagnostics) not in (list, tuple) or any(type(d) is not TypeRegistrationDiagnostic for d in self.diagnostics):
+            raise TypeError('Registration result requires typed ordered diagnostics.')
+        diagnostics = tuple(self.diagnostics)
+        if bool(diagnostics) != (self.outcome is TypeRegistrationOutcome.REJECTED):
+            raise ValueError('Only rejected registration results have failure diagnostics.')
+        object.__setattr__(self, 'diagnostics', diagnostics)
+
+    @property
+    def is_success(self) -> bool:
+        return self.outcome is not TypeRegistrationOutcome.REJECTED
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeRegistryLookup:
+    """Read-only explicit exact-version projection implementing existing TypeLookup.
+
+    No hidden defaults: only selected identities are visible. Binding unknown
+    versions or selecting two versions for one identity is a programming error.
+    """
+    registry: TypeRegistry
+    references: tuple[ElementVersionRef, ...]
+
+    def __post_init__(self):
+        if type(self.registry) is not TypeRegistry or type(self.references) not in (tuple, list):
+            raise TypeError('A bound lookup requires a registry and explicit ordered references.')
+        references = tuple(self.references)
+        ids = set()
+        for reference in references:
+            if type(reference) is not ElementVersionRef:
+                raise TypeError('Bound lookup selections must be exact ElementVersionRef values.')
+            if reference.element_id in ids:
+                raise ValueError('Bound lookup requires one exact version per selected identity.')
+            if not self.registry.contains(reference):
+                raise ValueError('Cannot bind an unregistered exact version.')
+            ids.add(reference.element_id)
+        object.__setattr__(self, 'references', tuple(sorted(references, key=lambda r: str(r.element_id))))
+
+    def find(self, reference: ElementRef) -> SemanticElement | None:
+        if type(reference) is not ElementRef or type(reference.element_id) is not SemanticElementId:
+            raise TypeError('TypeLookup requires a canonical identity-only ElementRef.')
+        selected = next((r for r in self.references if r.element_id == reference.element_id), None)
+        if selected is None:
+            return None
+        entry = self.registry.find_by_version(selected)
+        if entry is None:
+            raise RuntimeError('Bound lookup snapshot lost a previously verified exact entry.')
+        return entry.type_definition

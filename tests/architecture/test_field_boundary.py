@@ -27,4 +27,4 @@ class FieldBoundaryTests(unittest.TestCase):
     def test_model_public_boundary_has_only_foundational_imports(self):
         model = discover(ROOT)
         imports = {name.split('.')[0] for source in model.sources if source.owner == 'model-core' for name, line in source.targets}
-        self.assertEqual(imports, {'dataclasses', 're', 'semantic_kernel', 'enum', 'decimal', 'typing', 'model_core'})
+        self.assertEqual(imports, {'dataclasses', 're', 'semantic_kernel', 'enum', 'decimal', 'typing', 'types', 'model_core'})
