@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class SemanticIdentityBoundaryTests(unittest.TestCase):
     def test_public_identity_is_owned_by_existing_kernel(self):
         self.assertEqual(SemanticElementId.__module__, "semantic_kernel.public")
-        self.assertEqual(set(public.__all__), {"MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds"})
+        self.assertEqual(set(public.__all__), {"MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError"})
 
     def test_kernel_has_only_foundational_imports_and_no_module_dependencies(self):
         model = discover(ROOT)
