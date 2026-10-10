@@ -1,11 +1,11 @@
 from dataclasses import FrozenInstanceError, replace
 import unittest
-from model_core.public import DataFacet, DataFacetError, FieldDefinition, FieldId, FieldName
+from model_core.public import FieldConstraintSet, FieldPresence, FieldNullability, DataFacet, DataFacetError, FieldDefinition, FieldId, FieldName
 from semantic_kernel.public import FacetKinds
 
 
 def field(number, name):
-    return FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name))
+    return FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ()))
 
 
 class DataFacetTests(unittest.TestCase):

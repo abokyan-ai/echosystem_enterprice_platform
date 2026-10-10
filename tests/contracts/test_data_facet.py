@@ -1,8 +1,9 @@
+from model_core.constraint_wire import field_to_wire, field_from_wire
 from dataclasses import replace, FrozenInstanceError
 import json
 import unittest
 from semantic_kernel.public import FacetDefinition, FacetKinds, SemanticElementKinds
-from model_core.public import DataFacet, DataFacetError, TypeDataComposition, DATA_FACET_APPLICABILITY, FieldId, FieldName, FieldDefinition
+from model_core.public import FieldConstraintSet, FieldPresence, FieldNullability, DataFacet, DataFacetError, TypeDataComposition, DATA_FACET_APPLICABILITY, FieldId, FieldName, FieldDefinition
 from test_semantic_element import TestTypeDefinition, ID, CONTEXT
 from semantic_kernel.public import QualifiedName, SemanticVersion
 
@@ -12,7 +13,7 @@ def customer():
 
 
 def data():
-    return DataFacet([FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name)) for i, name in enumerate(('name', 'active', 'creditLimit'))])
+    return DataFacet([FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())) for i, name in enumerate(('name', 'active', 'creditLimit'))])
 
 
 def read_facet(facet: FacetDefinition):
@@ -22,7 +23,7 @@ def read_facet(facet: FacetDefinition):
 def from_wire(wire):
     if wire['kind'] != str(FacetKinds.DATA):
         raise ValueError('Expected data discriminator')
-    return DataFacet([FieldDefinition(FieldId.parse(f['id']), FieldName.parse(f['name'])) for f in wire['fields']])
+    return DataFacet([field_from_wire(f) for f in wire['fields']])
 
 
 class DataFacetContractTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class DataFacetContractTests(unittest.TestCase):
 
     def test_internal_wire_round_trip_preserves_order_and_ids(self):
         facet = data()
-        wire = {'kind': str(facet.kind), 'fields': [{'id': str(f.id), 'name': str(f.name)} for f in facet.fields]}
+        wire = {'kind': str(facet.kind), 'fields': [field_to_wire(f) for f in facet.fields]}
         self.assertEqual(from_wire(json.loads(json.dumps(wire))), facet)
         self.assertEqual([f['name'] for f in wire['fields']], ['name', 'active', 'creditLimit'])
         self.assertEqual(from_wire({'kind': 'data', 'fields': []}), DataFacet(()))
@@ -74,7 +75,7 @@ class DataFacetContractTests(unittest.TestCase):
     def test_invalid_internal_wire_is_validated(self):
         with self.assertRaises(ValueError):
             from_wire({'kind': 'policy', 'fields': []})
-        field = {'id': 'fld_550e8400-e29b-41d4-a716-000000000000', 'name': 'name'}
+        field = {'id': 'fld_550e8400-e29b-41d4-a716-000000000000', 'name': 'name', 'constraints': {'presence': 'required', 'nullability': 'non-null', 'values': []}}
         with self.assertRaises(DataFacetError):
             from_wire({'kind': 'data', 'fields': [field, field]})
 

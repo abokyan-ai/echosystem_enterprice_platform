@@ -107,3 +107,9 @@ TYPE-02 adds model-owned immutable `FieldId`, case-sensitive local `FieldName` a
 ## Structural data facet
 
 TYPE-03 adds immutable ordered `DataFacet`, fixed `data` kind, local ID/name/case-collision validation and exact typed lookup. `TypeDataComposition` provides a minimal explicit single-facet association through the existing root contract; production TYPE-01 is still missing, so integration is tested with an immutable fixture. See [DataFacet contract](docs/model/data-facet.md), [ADR-0018](docs/architecture/decisions/ADR-0018-data-facet-structural-composition.md) and [verification](docs/architecture/type03-verification.md). Complete missing prerequisites before production type integration; then TYPE-04/05/06.
+
+### TYPE-04 — Field Constraints
+
+FieldDefinition now requires an explicit FieldConstraintSet with separate FieldPresence and FieldNullability axes, plus seven immutable typed constraints. Kind-normalized collections reject duplicates and local length/range/precision contradictions. Numeric bounds use exact fixed-point text; patterns remain unevaluated text with dialect deferred. Internal snapshot mappings round-trip canonical state without JSON/framework coupling. Field types and applicability remain TYPE-05/06 work; production TYPE-01, SK-09 and SK-11 are still missing.
+
+See [contract, truth table and Sales demo](docs/model/field-constraints.md), [ADR-0019](docs/architecture/decisions/ADR-0019-field-presence-nullability-and-constraints.md) and [verification](docs/architecture/type04-verification.md). Two-argument FieldDefinition construction and legacy wire mappings now require explicit constraints; no hidden defaults are supplied.

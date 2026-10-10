@@ -1,14 +1,16 @@
-# TYPE-02: FieldDefinition
+# FieldDefinition: identity, local naming and explicit constraints
+
+TYPE-04 evolves the original TYPE-02 contract: constructors now require an explicit FieldConstraintSet. The historical TYPE-02 verification record remains unchanged. See [Field Constraints](field-constraints.md) for current presence/nullability, payload and serialization semantics.
 
 ## Inspected state and scope
 
 The inspected main contains ARC-01..05, SK-01..08 and SK-10. model-core previously exposed only its foundation MODULE_NAME boundary; no TypeDefinition, temporary property abstraction or field API exists. SK-09 PrimitiveType, SK-11 Diagnostics Model and TYPE-01 TypeDefinition are absent. This stage implements only independent field identity/name snapshots; it does not implement/reimplement TypeDefinition or claim missing prerequisites complete. Future DataFacet/type integration requires those stages first.
 
-FieldDefinition is an owned structural semantic member, not a SemanticElement or a physical/programming/transport/presentation field. Its future host is a type's DataFacet. Identity/naming semantics are stable early; the full FieldDefinition property set and serialized shape intentionally evolve through TYPE-04/05.
+FieldDefinition is an owned structural semantic member, not a SemanticElement or a physical/programming/transport/presentation field. Its collection host is a type's DataFacet. Identity/naming semantics are stable early; the full FieldDefinition property set and serialized shape intentionally evolve through TYPE-04/05.
 
 ## Public model contract and identity
 
-All six public types live in `model_core.public`, not the minimal Semantic Kernel: FieldId/FieldIdError, FieldName/FieldNameError, FieldDefinition/FieldDefinitionError. No dependency direction changes, modules or bootstrap registrations are needed. Source uses dataclasses/re only; model-core does not need to import Kernel for this small independent component, while its allowed dependency remains Kernel. Kernel never imports model fields.
+The original six field public types live in `model_core.public`, not the minimal Semantic Kernel: FieldId/FieldIdError, FieldName/FieldNameError, FieldDefinition/FieldDefinitionError. No dependency direction changes, modules or bootstrap registrations are needed. Current model-core uses approved dataclasses/re/enum/decimal/typing, local snapshot mapping and Kernel public facet/host contracts. Kernel never imports model fields.
 
 FieldId is a frozen slots value with canonical `fld_<hyphenated UUIDv4>` text. It follows SK-01's representation strategy with a distinct prefix and nominal type: lowercase hex canonicalization, strict lowercase prefix, validated UUID version 4/RFC variant, no whitespace/alternative forms. It is opaque, not derived from type/name/hash/order. There is no generator or randomness in construction/parsing. Existing Kernel validation is private and specific to SemanticElementId, so it is not imported, wrapped or exposed as a model ID. A small model-owned regex implements the same established strategy without cross-boundary internal coupling or speculative generic ID hierarchy.
 
@@ -26,38 +28,40 @@ FieldDefinition is a frozen slots dataclass with exactly:
 | --- | --- |
 | id | FieldId |
 | name | FieldName |
+| constraints | FieldConstraintSet |
 
-Both constructor and create require validated typed values and retain them without reparsing. No raw strings, QName, SemanticElementId or omitted/default members are accepted. There is no SemanticElement inheritance, owner pointer, independent version, type/any/object placeholder, constraint, required/nullability flag, default/computed/read-only flag, ordering, DB/API/UI/search mapping, registry, resolution, compiler/runtime methods or metadata bag.
+Constructor and create require all three explicit validated typed values and retain them without reparsing. No raw strings, QName, SemanticElementId or omitted/default members are accepted. There is no SemanticElement inheritance, owner pointer, independent version, type/any/object placeholder, raw constraint bag, combined required/nullability boolean, default/computed/read-only flag, ordering, DB/API/UI/search mapping, registry, resolution, compiler/runtime methods or metadata bag.
 
 ```python
-from model_core.public import FieldId, FieldName, FieldDefinition
+from model_core.public import FieldId, FieldName, FieldDefinition, FieldConstraintSet, FieldPresence, FieldNullability
 
 identity = FieldId.parse('fld_550e8400-e29b-41d4-a716-446655440000')
-old = FieldDefinition.create(identity, FieldName.parse('creditLimit'))
-renamed = FieldDefinition.create(identity, FieldName.parse('creditCeiling'))
+constraints = FieldConstraintSet(FieldPresence.OPTIONAL, FieldNullability.NON_NULL, ())
+old = FieldDefinition.create(identity, FieldName.parse('creditLimit'), constraints)
+renamed = FieldDefinition.create(identity, FieldName.parse('creditCeiling'), constraints)
 assert old.id == renamed.id
 assert old != renamed
 ```
 
-Snapshot equality/hash includes id and name. Identity comparisons use `.id`; changing name produces a new snapshot with the same identity and different snapshot equality. This represents possible rename without automatic compatibility/migration classification. Different IDs may have the same name; duplicate IDs/names and case collisions are collection-level future DataFacet/type validation, not local FieldName/FieldDefinition decisions.
+Snapshot equality/hash includes id, name and constraints. Identity comparisons use `.id`; changing name produces a new snapshot with the same identity and different snapshot equality. This represents possible rename without automatic compatibility/migration classification. Different IDs may have the same name; duplicate IDs/names and case collisions are collection-level DataFacet validation, not local FieldName/FieldDefinition decisions.
 
 ## Projections, order and planned evolution
 
 A field is semantic source data, not a runtime-language property, SQL/ORM column/FK, API/JSON property, search index field or form field. Physical names, labels/localization, indexing, primary keys and presentation order belong to projections/facets. No name infers those semantics.
 
-Ordering never defines field identity. TYPE-03 may preserve deterministic authoring/serialization collection order separately; no order/position/ordinal is stored here. Required/optional/missing/null/default semantics are deferred to TYPE-04 rather than reduced to booleans. TYPE-05 supplies correct primitive/semantic TypeRef semantics; no raw string/object/null type placeholder is introduced. Full property set is evolving until those contracts are designed; no final composition shape is promised.
+Ordering never defines field identity. TYPE-03 preserves deterministic authoring/serialization collection order separately; no order/position/ordinal is stored here. Presence/nullability are explicit independent TYPE-04 enums; defaults remain deferred. TYPE-05 supplies correct primitive/semantic TypeRef semantics; no raw string/object/null type placeholder is introduced. Full property set is evolving until those contracts are designed; no final composition shape is promised.
 
-Conceptual integration only (TypeDefinition/DataFacet/TypeRef/Constraints are not implemented):
+DataFacet and constraints exist; production TypeDefinition and TypeRef remain deferred:
 
 ```mermaid
 flowchart TD
-    T["Future TypeDefinition"] -->|composes| D["Future DataFacet TYPE-03"]
+    T["Future TypeDefinition"] -->|composes| D["DataFacet TYPE-03"]
     D -->|contains| F["FieldDefinition"]
     F -->|stable member identity| I["FieldId"]
     F -->|local name| N["FieldName"]
-    D -->|future validation| C["Collection uniqueness and order"]
+    D -->|local validation| C["Collection uniqueness and order"]
     F -.->|planned evolution| R["TypeRef TYPE-05"]
-    F -.->|planned evolution| K["Constraints TYPE-04"]
+    F -->|explicit constraints| K["FieldConstraintSet TYPE-04"]
 ```
 
 ## Local diagnostics and internal serialization
@@ -70,21 +74,14 @@ SK-11 is absent, so follow existing code/message ValueError conventions instead 
 | TYPE-FIELD-002 | Wrong typed ID, scalar type or noncanonical fld_UUIDv4 format |
 | TYPE-FIELD-003 | Field name missing/empty/all-whitespace scalar, or None typed name |
 | TYPE-FIELD-004 | Wrong typed name, scalar type or invalid local ASCII grammar |
+| TYPE-FIELD-005 | Missing or wrong typed FieldConstraintSet |
 
 Missing positional arguments use TypeError. try_parse returns None only for its expected primitive error; unexpected failures propagate. Future SK-11 integration must preserve diagnostic meanings without introducing dependencies on compiler/UI frameworks.
 
-Explicit scalar mappings use canonical ID and exact name text. A **test-only internal/evolving** model mapping demonstrates:
-
-```json
-{"id":"fld_550e8400-e29b-41d4-a716-446655440000","name":"creditLimit"}
-```
-
-This is not a final externally stable field wire schema and no schema/release is published. It will evolve at least through TYPE-05. Tests map/parse each typed scalar outside model-core; no serializer framework or to_json methods enter the value. Direct json.dumps of unmapped values fails. Native dataclass repr is diagnostic only and never a wire contract.
+Explicit scalar mappings retain canonical ID and exact name. The current internal/evolving field mapping also requires constraints (presence, nullability and values); old two-member wire mappings are rejected without hidden defaults. `model_core.constraint_wire` implements explicit encode/decode mappings without JSON/framework imports or exports on the public cross-module surface. See [actual wire example](field-constraints.md#field-integration-and-serialization-boundary). The shape remains evolving through TYPE-05. Direct json.dumps of model values fails; repr is not wire format.
 
 ## Architecture, demo and next work
 
-Existing dependency/public/stdlib rules plus ARCH-SK-002/003 protect direction/neutrality; focused actual ownership, shape, MRO and import tests verify model placement, no SemanticElement inheritance, only FieldId/FieldName state and no physical/framework leakage. All 44 Fitness rules remain unchanged; no redundant rule or external static type checker was added/run.
+Existing dependency/public/stdlib rules protect direction and neutrality. Focused tests verify exact id/name/constraints shape, owned-member rather than SemanticElement semantics, stable identities, explicit constraints and no physical/framework leakage. DataFacet preserves local duplicate ID/name rejection, case portability and ordering. No compatibility/migration classification is inferred from renamed or differently constrained snapshots.
 
-Unit fixtures model only Customer name/active, Product name/price and SalesOrder orderNumber/orderDate fields, not full semantic types. `FieldSerializationTests.test_demo_rename_identity_without_compatibility_classification` demonstrates creditLimit -> creditCeiling with preserved ID. All tests are pure, with no registry or resolution.
-
-See [ADR-0017](../architecture/decisions/ADR-0017-field-identity-and-local-naming.md) and [verification](../architecture/type02-verification.md). Complete missing SK-09, SK-11 and TYPE-01 before integrating TYPE-03 DataFacet v0, then TYPE-04 constraints and TYPE-05 references. Deferred: DataFacet, TypeRef, constraints/requiredness/nullability/defaults, computed fields, owner-aware FieldRef, registries, compatibility/diff/migration and all physical/API/UI/search mappings. Full type/constraint composition, authoring ID retention, duplicate/case-collision policy and movement semantics remain explicit design seams.
+See [ADR-0017](../architecture/decisions/ADR-0017-field-identity-and-local-naming.md), [ADR-0019](../architecture/decisions/ADR-0019-field-presence-nullability-and-constraints.md) and the current [constraint contract](field-constraints.md). TYPE-05 supplies TypeRef, then TYPE-06 applicability. Missing SK-09, SK-11 and production TYPE-01 remain prerequisites for complete production type integration. Defaults, computed fields, owner-aware FieldRef, registry resolution, compatibility/diff/migration and all physical/API/UI/search mappings remain deferred.

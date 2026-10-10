@@ -29,4 +29,4 @@ class DataFacetBoundaryTests(unittest.TestCase):
     def test_wrapper_has_no_duplicate_fields_or_general_metadata_bag(self):
         self.assertEqual({f.name for f in fields(TypeDataComposition)}, {'type_definition', 'data'})
         self.assertFalse(hasattr(TypeDataComposition, 'fields'))
-        self.assertEqual({f.name for f in fields(FieldDefinition)}, {'id', 'name'})
+        self.assertEqual({f.name for f in fields(FieldDefinition)}, {'id', 'name', 'constraints'})
