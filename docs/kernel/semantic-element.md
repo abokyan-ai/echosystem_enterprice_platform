@@ -4,19 +4,20 @@
 
 ## Public contract
 
-SemanticElement is a Python structural `typing.Protocol` with three read-only property contracts:
+SemanticElement is a Python structural `typing.Protocol` with four read-only property contracts after SK-06:
 
 | Property | Required type | Meaning |
 | --- | --- | --- |
 | id | SemanticElementId | Stable semantic identity |
 | qualified_name | QualifiedName | Canonical name for the definition snapshot |
 | context | SemanticContextRef | Explicit intended meaning-context reference |
+| kind | SemanticElementKind | Explicit open semantic classification |
 
 ```python
 from semantic_kernel.public import SemanticElement
 
 def read_definition(element: SemanticElement):
-    return element.id, element.qualified_name, element.context
+    return element.id, element.qualified_name, element.context, element.kind
 ```
 
 Implementations need not inherit the protocol or share implementation behavior. This avoids a mandatory base class, template methods or deep hierarchy. Protocol getter types are non-optional, use the existing primitives and provide a read-only static consumer surface. There is no root constructor, builder, runtime validator or generic production implementation. Python annotations/Protocol do not themselves enforce runtime value types or freeze implementations: concrete definitions must protect their construction invariants and immutable snapshot state. The protocol is intentionally not runtime_checkable; `isinstance` would only inspect member presence, not validate their semantic types.
@@ -39,18 +40,18 @@ Before a production ContextDefinition is introduced, an architecture decision mu
 
 ## Minimal root and future evolution
 
-The contract contains only id, qualified_name and context. Kind and Version have dedicated future stages SK-06/SK-07, so no temporary string kind/version is introduced. Facets wait for SK-10; metadata/annotations require explicit composed contracts rather than an ungoverned dictionary/object extension bag. There are no tags, description/display fields, source locations, relationship collections, parent/children, type fields, action handlers, event payloads, persistence, UI/API, tenancy, security, package or deployment fields.
+The current contract contains only id, qualified_name, context and typed kind. SK-06 adds the planned open classification primitive; Version remains deferred to SK-07, without temporary string representations. Facets wait for SK-10; metadata/annotations require explicit composed contracts rather than an ungoverned dictionary/object extension bag. There are no tags, description/display fields, source locations, relationship collections, parent/children, type fields, action handlers, event payloads, persistence, UI/API, tenancy, security, package or deployment fields.
 
 There are no validate/compile/persist/render/authorize/to_json/visitor/clone/register/lifecycle methods. Subsystem behavior belongs to external consumers, and local invariants belong to concrete construction. Polymorphic serialization is deferred until concrete definitions and typed Kind contracts exist; no discriminator/type registry or root serialization requirement is added.
 
-**Adding a field to SemanticElement requires architecture review.** A proposed field must be universal to first-class definitions, technology-neutral, stable across representations, infrastructure-independent, natural for all element kinds, avoid widespread optional/null semantics, and belong here more clearly than in a facet/composed contract. This is an architectural decision, not a convenience refactor. Future Kind/Version evolution must be typed and explicitly reviewed, rather than represented by placeholders now.
+**Adding a field to SemanticElement requires architecture review.** A proposed field must be universal to first-class definitions, technology-neutral, stable across representations, infrastructure-independent, natural for all element kinds, avoid widespread optional/null semantics, and belong here more clearly than in a facet/composed contract. This is an architectural decision, not a convenience refactor. Future root/Version evolution must be typed and explicitly reviewed, rather than represented by placeholders now.
 
 ## Architecture and executable demo
 
-The root uses the existing SemanticElementId, QualifiedName and SemanticContextRef in the same public surface, plus the standard-library typing.Protocol. Kernel production imports are dataclasses, re and typing; no non-Kernel dependency is introduced. No new module or bootstrap/CLI registration is needed.
+The root uses the existing SemanticElementId, QualifiedName, SemanticContextRef and SemanticElementKind in the same public surface, plus the standard-library typing.Protocol. Kernel production imports are dataclasses, re and typing; no non-Kernel dependency is introduced. No new module or bootstrap/CLI registration is needed.
 
-ARCH-SK-ELEM-001 checks statically declared SemanticElement classes in registered production sources are Kernel-owned using the existing single AST pass. Existing ARCH-SK-002/003 and ARC-03 rules protect dependency independence and prohibited public imports. Negative fixtures demonstrate rejection of hypothetical runtime/compiler/ORM/UI imports. A source-level architecture test checks the current root declares only the three typed property contracts, alongside functional two-implementation consumer tests. No additional behavior rule is advertised as full semantic analysis. Static ownership does not infer generated classes/aliases.
+ARCH-SK-ELEM-001 checks statically declared SemanticElement classes in registered production sources are Kernel-owned using the existing single AST pass. Existing ARCH-SK-002/003 and ARC-03 rules protect dependency independence and prohibited public imports. Negative fixtures demonstrate rejection of hypothetical runtime/compiler/ORM/UI imports. A source-level architecture test checks the current root declares only the four typed property contracts, alongside functional two-implementation consumer tests. No additional behavior rule is advertised as full semantic analysis. Static ownership does not infer generated classes/aliases.
 
-The executable `SemanticElementContractTests.test_demo` reads the same contract from test Type/Action definitions with explicit ID, name and context. Full fitness proves zero observed Kernel module dependencies; infrastructure/runtime/compiler dependencies are absent. Literal placeholder IDs in the prompt are replaced by valid SK-01 UUIDv4 values in actual tests.
+The executable `SemanticElementContractTests.test_demo` reads the same contract from test Type/Action definitions with explicit ID, name, context and kind. Full fitness proves zero observed Kernel module dependencies; infrastructure/runtime/compiler dependencies are absent. Literal placeholder IDs in the prompt are replaced by valid SK-01 UUIDv4 values in actual tests.
 
-See [ADR-0012](../architecture/decisions/ADR-0012-minimal-semantic-element-root.md) and [verification](../architecture/sk05-verification.md). Deferred: Element Kinds, versioning, semantic references, facets, metadata/annotations, concrete definitions, registries, resolution and context bootstrap ownership. Next: SK-06 Semantic Element Kinds, then SK-07 Semantic Version Reference.
+See [ADR-0012](../architecture/decisions/ADR-0012-minimal-semantic-element-root.md) and [verification](../architecture/sk05-verification.md). Deferred: versioning, semantic references, facets, metadata/annotations, concrete definitions, registries, resolution and context bootstrap ownership. See [SK-06 kind contract](semantic-element-kind.md) and [ADR-0013](../architecture/decisions/ADR-0013-open-semantic-element-kind.md) for the planned kind addition. Next: SK-07 Semantic Version Reference, then SK-08 Semantic References.

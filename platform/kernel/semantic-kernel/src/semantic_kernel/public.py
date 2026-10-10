@@ -4,7 +4,7 @@ import re as _re
 from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -253,6 +253,82 @@ class SemanticContextRef:
         return str(self.context_id)
 
 
+_KIND_SEGMENT = _re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+
+
+class SemanticElementKindError(ValueError):
+    """Lexical classification diagnostic, not an unsupported-kind result."""
+    def __init__(self, code: str, message: str, segment_index: int | None = None):
+        self.code = code
+        self.message = message
+        self.segment_index = segment_index
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticElementKind:
+    """Open, canonical lowercase kind identifier, independent of known vocabulary.
+
+    Dot-separated kebab-case segments express identifier scope, not ownership.
+    Unknown valid values are preserved without registry or compiler checks.
+    """
+    value: str
+
+    def __post_init__(self):
+        value = self.value
+        if value is None or isinstance(value, str) and (not value or str.isspace(value)):
+            raise SemanticElementKindError("SEM-KIND-001", "Semantic element kind is required.")
+        if not isinstance(value, str):
+            raise SemanticElementKindError("SEM-KIND-002", "Semantic element kind requires a string representation.")
+        for index, segment in enumerate(str.split(value, ".")):
+            if _KIND_SEGMENT.fullmatch(segment) is None:
+                raise SemanticElementKindError("SEM-KIND-002", f"Invalid semantic element kind format at segment {index}: expected lowercase ASCII kebab-case starting with a letter; empty segments, whitespace and other separators are forbidden.", index)
+        object.__setattr__(self, "value", str.__str__(value))
+
+    @classmethod
+    def parse(cls, value: str) -> "SemanticElementKind":
+        return cls(value)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "SemanticElementKind | None":
+        """Return None for lexical rejection; unexpected failures propagate."""
+        try:
+            return cls(value)
+        except SemanticElementKindError:
+            return None
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@_dataclass(frozen=True, slots=True)
+class _CoreSemanticElementKinds:
+    """Immutable well-known value catalog; never a parser allowlist or registry."""
+    TYPE_DEFINITION: SemanticElementKind = SemanticElementKind("type-definition")
+    RELATIONSHIP_DEFINITION: SemanticElementKind = SemanticElementKind("relationship-definition")
+    BEHAVIOR_DEFINITION: SemanticElementKind = SemanticElementKind("behavior-definition")
+    CAPABILITY_DEFINITION: SemanticElementKind = SemanticElementKind("capability-definition")
+    ACTION_DEFINITION: SemanticElementKind = SemanticElementKind("action-definition")
+    EVENT_DEFINITION: SemanticElementKind = SemanticElementKind("event-definition")
+    PROCESS_DEFINITION: SemanticElementKind = SemanticElementKind("process-definition")
+    RULE_DEFINITION: SemanticElementKind = SemanticElementKind("rule-definition")
+    POLICY_DEFINITION: SemanticElementKind = SemanticElementKind("policy-definition")
+    CONTRACT_DEFINITION: SemanticElementKind = SemanticElementKind("contract-definition")
+    COMPOSITION_DEFINITION: SemanticElementKind = SemanticElementKind("composition-definition")
+    EXTENSION_DEFINITION: SemanticElementKind = SemanticElementKind("extension-definition")
+
+    @property
+    def ALL(self) -> tuple[SemanticElementKind, ...]:
+        return (self.TYPE_DEFINITION, self.RELATIONSHIP_DEFINITION, self.BEHAVIOR_DEFINITION, self.CAPABILITY_DEFINITION, self.ACTION_DEFINITION, self.EVENT_DEFINITION, self.PROCESS_DEFINITION, self.RULE_DEFINITION, self.POLICY_DEFINITION, self.CONTRACT_DEFINITION, self.COMPOSITION_DEFINITION, self.EXTENSION_DEFINITION)
+
+    def is_core(self, kind: SemanticElementKind) -> bool:
+        """Known-vocabulary membership only; no support, ownership or validity claim."""
+        return isinstance(kind, SemanticElementKind) and kind in self.ALL
+
+
+SemanticElementKinds = _CoreSemanticElementKinds()
+
+
 class SemanticElement(_Protocol):
     """Minimal read-only contract for a first-class semantic definition snapshot.
 
@@ -273,4 +349,9 @@ class SemanticElement(_Protocol):
     @property
     def context(self) -> SemanticContextRef:
         """Explicit reference to the intended meaning context; not resolved here."""
+        ...
+
+    @property
+    def kind(self) -> SemanticElementKind:
+        """Explicit open semantic category, independent of implementation class."""
         ...

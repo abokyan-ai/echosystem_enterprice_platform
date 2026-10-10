@@ -16,11 +16,11 @@ class SemanticElementBoundaryTests(unittest.TestCase):
         self.assertEqual(report['summary']['status'], 'HEALTHY')
         self.assertEqual(model.graph('observed')['semantic-kernel'], set())
 
-    def test_root_source_contains_only_three_typed_property_contracts(self):
+    def test_root_source_contains_only_four_typed_property_contracts(self):
         tree = ast.parse((ROOT / 'platform/kernel/semantic-kernel/src/semantic_kernel/public.py').read_text())
         root = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'SemanticElement')
         properties = [node for node in root.body if isinstance(node, ast.FunctionDef)]
-        self.assertEqual({node.name: ast.unparse(node.returns) for node in properties}, {'id': 'SemanticElementId', 'qualified_name': 'QualifiedName', 'context': 'SemanticContextRef'})
+        self.assertEqual({node.name: ast.unparse(node.returns) for node in properties}, {'id': 'SemanticElementId', 'qualified_name': 'QualifiedName', 'context': 'SemanticContextRef', 'kind': 'SemanticElementKind'})
         for node in properties:
             self.assertEqual([ast.unparse(decorator) for decorator in node.decorator_list], ['property'])
             self.assertTrue(all(isinstance(part, ast.Expr) and isinstance(part.value, ast.Constant) for part in node.body))
