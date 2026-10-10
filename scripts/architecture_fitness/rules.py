@@ -174,4 +174,7 @@ def default_registry():
     def qualified_name_owner(model, context):
         return [ArchitectureViolation("ARCH-SK-QN-001", Severity.CRITICAL, "QualifiedName definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class QualifiedName", "Use semantic_kernel.public.QualifiedName; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "QualifiedName" and source.owner != "semantic-kernel"]
     registry.register(ArchitectureRule("ARCH-SK-QN-001", "Qualified semantic name ownership", "QualifiedName class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", qualified_name_owner))
+    def context_ref_owner(model, context):
+        return [ArchitectureViolation("ARCH-SK-CTX-001", Severity.CRITICAL, "SemanticContextRef definitions belong to semantic-kernel", source.owner or "unregistered", "semantic-kernel", "class SemanticContextRef", "Use semantic_kernel.public.SemanticContextRef; do not duplicate its definition.", file=source.file, line=line) for source in model.sources for name, line in source.classes if name == "SemanticContextRef" and source.owner != "semantic-kernel"]
+    registry.register(ArchitectureRule("ARCH-SK-CTX-001", "Semantic context reference ownership", "SemanticContextRef class definitions belong to Semantic Kernel", "module", Severity.CRITICAL, "Production class declarations", context_ref_owner))
     return registry
