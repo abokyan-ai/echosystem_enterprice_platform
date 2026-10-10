@@ -95,3 +95,7 @@ SK-07 adds immutable `SemanticVersion` (canonical major.minor.patch, numeric ord
 ## Semantic references
 
 SK-08 adds immutable `ElementRef` containing only a stable `SemanticElementId`. Exact coordinates remain `ElementVersionRef`; symbolic name resolution is deferred outside Kernel. See [reference contract](docs/kernel/semantic-references.md), [ADR-0015](docs/architecture/decisions/ADR-0015-semantic-reference-model.md) and [verification](docs/architecture/sk08-verification.md). Next: SK-09 Primitive Type System, then SK-10 Facet Base Contract and SK-11 Diagnostics Model.
+
+## Composable semantic facets
+
+SK-10 adds open typed `FacetKind`, fourteen immutable Core `FacetKinds`, a one-property `FacetDefinition` Protocol and declarative `FacetApplicability` using semantic kinds. No facets collection or behavior enters `SemanticElement`. See [facet contract](docs/kernel/facets.md), [ADR-0016](docs/architecture/decisions/ADR-0016-composable-semantic-facet-model.md) and [verification](docs/architecture/sk10-verification.md). SK-09 PrimitiveType is still missing; this independent stage does not claim Minimum Kernel completion. Complete SK-09 and SK-11 before concrete Type/Field/DataFacet work.
