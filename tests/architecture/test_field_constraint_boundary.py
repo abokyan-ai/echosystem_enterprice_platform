@@ -23,7 +23,7 @@ class FieldConstraintBoundaryTests(unittest.TestCase):
         self.assertEqual(model.graph('observed')['semantic-kernel'], set())
         self.assertEqual(model.graph('observed')['model-core'], {'semantic-kernel'})
         imports = {name.split('.')[0] for source in model.sources if source.owner == 'model-core' for name, line in source.targets}
-        self.assertEqual(imports, {'dataclasses', 're', 'enum', 'decimal', 'typing', 'model_core', 'semantic_kernel'})
+        self.assertEqual(imports, {'dataclasses', 're', 'enum', 'decimal', 'typing', 'types', 'model_core', 'semantic_kernel'})
         self.assertEqual(execute(model)['summary']['status'], 'HEALTHY')
 
     def test_typed_canonical_shape_with_distinct_axes_no_metadata_bag(self):
