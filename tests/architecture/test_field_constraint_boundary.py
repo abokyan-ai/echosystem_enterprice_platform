@@ -30,7 +30,7 @@ class FieldConstraintBoundaryTests(unittest.TestCase):
         self.assertEqual({f.name: f.type for f in fields(FieldConstraintSet)}, {'presence': FieldPresence, 'nullability': FieldNullability, 'value_constraints': tuple[ValueConstraint, ...]})
         self.assertIsNot(FieldPresence, FieldNullability)
         self.assertIs(get_type_hints(FieldDefinition)['constraints'], FieldConstraintSet)
-        self.assertEqual({f.name for f in fields(FieldDefinition)}, {'id', 'name', 'constraints'})
+        self.assertEqual({f.name for f in fields(FieldDefinition)}, {'id', 'name', 'type', 'constraints'})
         self.assertIs(get_type_hints(ValueConstraint.kind.fget)['return'], ConstraintKind)
         self.assertIsNone(ValueConstraint.kind.fset)
 

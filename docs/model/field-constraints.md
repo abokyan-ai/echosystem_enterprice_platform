@@ -1,5 +1,7 @@
 # TYPE-04: Field Constraints
 
+Current TYPE-05 update: FieldDefinition also requires `type: TypeRef`, and the internal field wire mapping includes a type discriminator. Presence/nullability/value semantics remain unchanged. See [Type References](type-references.md). Original TYPE-04 inspection/deferred statements below describe that stage.
+
 ## Inspected state and scope
 
 TYPE-02 supplied FieldDefinition(id,name), TYPE-03 supplied ordered DataFacet membership and TypeDataComposition, and SK-10 supplied generic facet contracts. TYPE-01 production TypeDefinition, SK-09 PrimitiveType and SK-11 Diagnostics Model remain absent. Tests integrate with the existing immutable test-only TypeDefinition; no production host or unified diagnostics is invented. This stage represents field constraints, not field types or executable validation.
@@ -35,6 +37,7 @@ constraint_set.find_by_kind(ConstraintKind.parse('max-length'))
 class FieldDefinition:
     id: FieldId
     name: FieldName
+    type: TypeRef  # added by TYPE-05
     constraints: FieldConstraintSet
 ```
 
@@ -124,7 +127,7 @@ flowchart TD
     C --> U["FieldNullability"]
     C --> V["Seven typed value constraints"]
     V --> K["Fixed ConstraintKind"]
-    F -.-> T["TypeRef: TYPE-05"]
+    F -.-> T["TypeRef: implemented TYPE-05"]
     T -.-> R["Applicability rules: TYPE-06"]
     C -.-> R
 ```

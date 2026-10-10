@@ -1,3 +1,5 @@
+from semantic_kernel.public import PrimitiveTypes
+from model_core.public import PrimitiveTypeRef
 from model_core.constraint_wire import field_to_wire, field_from_wire
 from dataclasses import replace, FrozenInstanceError
 import json
@@ -13,7 +15,7 @@ def customer():
 
 
 def data():
-    return DataFacet([FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())) for i, name in enumerate(('name', 'active', 'creditLimit'))])
+    return DataFacet([FieldDefinition(FieldId(f'fld_550e8400-e29b-41d4-a716-{i:012d}'), FieldName(name), PrimitiveTypeRef({'name': PrimitiveTypes.STRING, 'active': PrimitiveTypes.BOOLEAN, 'creditLimit': PrimitiveTypes.DECIMAL}[name]), FieldConstraintSet(FieldPresence.REQUIRED, FieldNullability.NON_NULL, ())) for i, name in enumerate(('name', 'active', 'creditLimit'))])
 
 
 def read_facet(facet: FacetDefinition):
@@ -75,7 +77,7 @@ class DataFacetContractTests(unittest.TestCase):
     def test_invalid_internal_wire_is_validated(self):
         with self.assertRaises(ValueError):
             from_wire({'kind': 'policy', 'fields': []})
-        field = {'id': 'fld_550e8400-e29b-41d4-a716-000000000000', 'name': 'name', 'constraints': {'presence': 'required', 'nullability': 'non-null', 'values': []}}
+        field = {'id': 'fld_550e8400-e29b-41d4-a716-000000000000', 'name': 'name', 'type': {'kind': 'primitive', 'primitive': 'string'}, 'constraints': {'presence': 'required', 'nullability': 'non-null', 'values': []}}
         with self.assertRaises(DataFacetError):
             from_wire({'kind': 'data', 'fields': [field, field]})
 

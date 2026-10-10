@@ -1,3 +1,5 @@
+from semantic_kernel.public import PrimitiveTypes
+from model_core.public import PrimitiveTypeRef
 from dataclasses import FrozenInstanceError, replace
 from decimal import localcontext
 import re
@@ -16,7 +18,7 @@ def constraints(*values, presence=FieldPresence.REQUIRED, nullability=FieldNulla
 
 
 def field(cs, name='creditLimit', number=0):
-    return FieldDefinition.create(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name), cs)
+    return FieldDefinition.create(FieldId(f'fld_550e8400-e29b-41d4-a716-{number:012d}'), FieldName(name), PrimitiveTypeRef(PrimitiveTypes.STRING), cs)
 
 
 class ConstraintKindTests(unittest.TestCase):
@@ -235,7 +237,7 @@ class FieldConstraintIntegrationTests(unittest.TestCase):
         cs = constraints(MinimumConstraint('0'), PrecisionConstraint(18), ScaleConstraint(2), presence=FieldPresence.OPTIONAL)
         f = field(cs)
         self.assertIs(f.constraints, cs)
-        self.assertFalse(hasattr(f, 'type'))
+        self.assertEqual(f.type, PrimitiveTypeRef(PrimitiveTypes.STRING))
 
     def test_field_rejects_missing_null_and_metadata_bags(self):
         for value in (None, {}, [], 'required'):

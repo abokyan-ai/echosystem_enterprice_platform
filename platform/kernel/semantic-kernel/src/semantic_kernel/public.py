@@ -4,7 +4,7 @@ import re as _re
 from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError", "ElementRef", "ElementRefError", "FacetKind", "FacetKindError", "FacetKinds", "FacetDefinition", "FacetApplicability", "FacetApplicabilityError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError", "ElementRef", "ElementRefError", "FacetKind", "FacetKindError", "FacetKinds", "FacetDefinition", "FacetApplicability", "FacetApplicabilityError", "PrimitiveType", "PrimitiveTypeError", "PrimitiveTypes"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -634,3 +634,64 @@ class FacetApplicability:
             raise FacetApplicabilityError("SEM-FACET-APP-003", "Allowed element kinds require an explicit frozenset of SemanticElementKind values.")
         if any(not isinstance(kind, SemanticElementKind) for kind in self.allowed_element_kinds):
             raise FacetApplicabilityError("SEM-FACET-APP-004", "Every allowed host category must be a validated SemanticElementKind, never a string or runtime class.")
+
+
+class PrimitiveTypeError(ValueError):
+    """Primitive vocabulary error; value parsing/coercion is outside this contract."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+_PRIMITIVE_NAMES = frozenset({'string', 'boolean', 'integer', 'decimal', 'date', 'datetime', 'uuid'})
+
+
+@_dataclass(frozen=True, slots=True)
+class PrimitiveType:
+    """Minimal closed semantic primitive vocabulary required by TYPE-05.
+
+    No runtime/storage types, numeric width, value parser, coercion, inference,
+    assignability or constraints matrix. This prerequisite does not claim full
+    SK-09 implementation without its separate specification.
+    """
+    value: str
+
+    def __post_init__(self):
+        if self.value is None or isinstance(self.value, str) and not self.value:
+            raise PrimitiveTypeError('SEM-PRIMITIVE-001', 'Primitive type is required.')
+        if not isinstance(self.value, str) or str.__str__(self.value) not in _PRIMITIVE_NAMES:
+            raise PrimitiveTypeError('SEM-PRIMITIVE-002', 'Expected one of the seven canonical semantic primitive names.')
+        object.__setattr__(self, 'value', str.__str__(self.value))
+
+    @classmethod
+    def parse(cls, value: str) -> "PrimitiveType":
+        return cls(value)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "PrimitiveType | None":
+        try:
+            return cls(value)
+        except PrimitiveTypeError:
+            return None
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@_dataclass(frozen=True, slots=True)
+class _CorePrimitiveTypes:
+    STRING: PrimitiveType = PrimitiveType('string')
+    BOOLEAN: PrimitiveType = PrimitiveType('boolean')
+    INTEGER: PrimitiveType = PrimitiveType('integer')
+    DECIMAL: PrimitiveType = PrimitiveType('decimal')
+    DATE: PrimitiveType = PrimitiveType('date')
+    DATETIME: PrimitiveType = PrimitiveType('datetime')
+    UUID: PrimitiveType = PrimitiveType('uuid')
+
+    @property
+    def ALL(self) -> tuple[PrimitiveType, ...]:
+        return (self.STRING, self.BOOLEAN, self.INTEGER, self.DECIMAL, self.DATE, self.DATETIME, self.UUID)
+
+
+PrimitiveTypes = _CorePrimitiveTypes()
