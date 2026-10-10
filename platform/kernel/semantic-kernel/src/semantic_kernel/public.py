@@ -4,7 +4,7 @@ import re as _re
 from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError", "ElementRef", "ElementRefError"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -442,6 +442,58 @@ class ElementVersionRef:
 
     def __str__(self) -> str:
         return str(self.element_id) + "@" + str(self.version)
+
+
+class ElementRefError(ValueError):
+    """Stable-reference diagnostic with a delegated identity code when parsed."""
+    def __init__(self, code: str, message: str, identity_code: str | None = None):
+        self.code = code
+        self.message = message
+        self.identity_code = identity_code
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class ElementRef:
+    """Reference to a semantic definition's stable identity, without version pinning.
+
+    Identity syntax is validated by SemanticElementId; target existence, kind,
+    visibility, version selection and name resolution belong outside Kernel.
+    This value contains neither a loaded definition nor an instance identity.
+    """
+    element_id: SemanticElementId
+
+    def __post_init__(self):
+        if self.element_id is None:
+            raise ElementRefError("SEM-REF-001", "Semantic element reference is required.")
+        if not isinstance(self.element_id, SemanticElementId):
+            raise ElementRefError("SEM-REF-002", "Element reference requires a validated SemanticElementId value.")
+
+    @classmethod
+    def from_id(cls, element_id: SemanticElementId) -> "ElementRef":
+        """Wrap an already validated identity, without reparsing or selecting a version."""
+        return cls(element_id)
+
+    @classmethod
+    def parse(cls, value: str) -> "ElementRef":
+        """Delegate scalar syntax and canonicalization entirely to SemanticElementId."""
+        try:
+            identity = SemanticElementId.parse(value)
+        except SemanticElementIdError as error:
+            code = {"SEM-ID-001": "SEM-REF-001", "SEM-ID-003": "SEM-REF-002"}.get(error.code, "SEM-REF-003")
+            raise ElementRefError(code, "Invalid semantic element identity in reference: " + error.message, error.code) from error
+        return cls(identity)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "ElementRef | None":
+        """Return None for reference diagnostics only; unexpected failures propagate."""
+        try:
+            return cls.parse(value)
+        except ElementRefError:
+            return None
+
+    def __str__(self) -> str:
+        return str(self.element_id)
 
 
 class SemanticElement(_Protocol):

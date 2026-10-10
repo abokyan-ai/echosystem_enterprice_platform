@@ -91,3 +91,7 @@ SK-06 adds immutable open `semantic_kernel.public.SemanticElementKind`, a frozen
 ## Exact semantic versions
 
 SK-07 adds immutable `SemanticVersion` (canonical major.minor.patch, numeric ordering), exact `ElementVersionRef` (stable element ID + version) and required typed `SemanticElement.version`. Versions are independent of package/artifact/deployment numbering and imply no compatibility. See [version contract](docs/kernel/semantic-version.md), [ADR-0014](docs/architecture/decisions/ADR-0014-exact-semantic-version-reference.md) and [verification](docs/architecture/sk07-verification.md). Next: SK-08 Semantic References, then SK-09 Primitive Type System.
+
+## Semantic references
+
+SK-08 adds immutable `ElementRef` containing only a stable `SemanticElementId`. Exact coordinates remain `ElementVersionRef`; symbolic name resolution is deferred outside Kernel. See [reference contract](docs/kernel/semantic-references.md), [ADR-0015](docs/architecture/decisions/ADR-0015-semantic-reference-model.md) and [verification](docs/architecture/sk08-verification.md). Next: SK-09 Primitive Type System, then SK-10 Facet Base Contract and SK-11 Diagnostics Model.
