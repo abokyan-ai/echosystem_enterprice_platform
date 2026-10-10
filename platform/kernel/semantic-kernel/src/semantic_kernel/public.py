@@ -1,9 +1,9 @@
-"""Pure semantic identity and naming contracts, independent of infrastructure."""
+"""Pure semantic identity, naming and reference contracts, independent of infrastructure."""
 from dataclasses import dataclass as _dataclass, field as _field
 import re as _re
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -199,3 +199,54 @@ class QualifiedName:
 
     def __str__(self) -> str:
         return str(self.namespace) + "." + self.local_name
+
+
+class SemanticContextRefError(ValueError):
+    """Reference construction diagnostic, with the delegated identity code when parsed."""
+    def __init__(self, code: str, message: str, identity_code: str | None = None):
+        self.code = code
+        self.message = message
+        self.identity_code = identity_code
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticContextRef:
+    """Typed stable identity reference to an intended semantic meaning context.
+
+    Validation establishes identity syntax only, never target existence/kind,
+    activity, accessibility or ownership. Resolution belongs outside Kernel.
+    """
+    context_id: SemanticElementId
+
+    def __post_init__(self):
+        if self.context_id is None:
+            raise SemanticContextRefError("SEM-CTXREF-001", "Semantic context reference is required.")
+        if not isinstance(self.context_id, SemanticElementId):
+            raise SemanticContextRefError("SEM-CTXREF-002", "Context reference requires a validated SemanticElementId value.")
+
+    @classmethod
+    def from_id(cls, context_id: SemanticElementId) -> "SemanticContextRef":
+        """Wrap an already validated identity without resolving or reparsing it."""
+        return cls(context_id)
+
+    @classmethod
+    def parse(cls, value: str) -> "SemanticContextRef":
+        """Reuse SemanticElementId scalar validation and canonicalization."""
+        try:
+            identity = SemanticElementId.parse(value)
+        except SemanticElementIdError as error:
+            code = {"SEM-ID-001": "SEM-CTXREF-001", "SEM-ID-003": "SEM-CTXREF-002"}.get(error.code, "SEM-CTXREF-003")
+            raise SemanticContextRefError(code, "Invalid semantic identity in context reference: " + error.message, error.code) from error
+        return cls(identity)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "SemanticContextRef | None":
+        """Return None for rejected input; unexpected implementation failures propagate."""
+        try:
+            return cls.parse(value)
+        except SemanticContextRefError:
+            return None
+
+    def __str__(self) -> str:
+        return str(self.context_id)
