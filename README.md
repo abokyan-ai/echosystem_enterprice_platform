@@ -99,3 +99,7 @@ SK-08 adds immutable `ElementRef` containing only a stable `SemanticElementId`. 
 ## Composable semantic facets
 
 SK-10 adds open typed `FacetKind`, fourteen immutable Core `FacetKinds`, a one-property `FacetDefinition` Protocol and declarative `FacetApplicability` using semantic kinds. No facets collection or behavior enters `SemanticElement`. See [facet contract](docs/kernel/facets.md), [ADR-0016](docs/architecture/decisions/ADR-0016-composable-semantic-facet-model.md) and [verification](docs/architecture/sk10-verification.md). SK-09 PrimitiveType is still missing; this independent stage does not claim Minimum Kernel completion. Complete SK-09 and SK-11 before concrete Type/Field/DataFacet work.
+
+## Structural field definitions
+
+TYPE-02 adds model-owned immutable `FieldId`, case-sensitive local `FieldName` and minimal `FieldDefinition(id, name)`. Stable identity survives rename; type/constraints and physical projections remain deferred. See [field contract](docs/model/field-definition.md), [ADR-0017](docs/architecture/decisions/ADR-0017-field-identity-and-local-naming.md) and [verification](docs/architecture/type02-verification.md). SK-09, SK-11 and TYPE-01 are absent; this independent stage does not claim them complete. Integrate DataFacet only after those prerequisites.
