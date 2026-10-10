@@ -1,5 +1,7 @@
 # TYPE-04: Field Constraints
 
+Current TYPE-06 update: [Type Validation Rules](type-validation.md) now judge primitive applicability, Integer bound shape and semantic targets separately from representation. Original stage-specific deferred statements below remain historical; constructors and public reference/constraint shapes are unchanged.
+
 Current TYPE-05 update: FieldDefinition also requires `type: TypeRef`, and the internal field wire mapping includes a type discriminator. Presence/nullability/value semantics remain unchanged. See [Type References](type-references.md). Original TYPE-04 inspection/deferred statements below describe that stage.
 
 ## Inspected state and scope

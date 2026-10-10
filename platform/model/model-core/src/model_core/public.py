@@ -4,10 +4,10 @@ import re as _re
 from enum import Enum as _Enum
 from decimal import Decimal as _Decimal
 from typing import Protocol as _Protocol
-from semantic_kernel.public import PrimitiveType, ElementRef, FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
+from semantic_kernel.public import PrimitiveTypes, PrimitiveType, ElementRef, FacetKind, FacetKinds, FacetApplicability, SemanticElementKind, SemanticElementKinds, SemanticElement, SemanticElementId, QualifiedName, SemanticContextRef, SemanticVersion
 
 MODULE_NAME = "model-core"
-__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet", "TypeRef", "TypeRefKind", "PrimitiveTypeRef", "SemanticTypeRef", "TypeRefError"]
+__all__ = ["MODULE_NAME", "FieldId", "FieldIdError", "FieldName", "FieldNameError", "FieldDefinition", "FieldDefinitionError", "DataFacet", "DataFacetError", "DATA_FACET_APPLICABILITY", "TypeDataComposition", "FieldConstraintError", "FieldPresence", "FieldNullability", "ConstraintKind", "ConstraintKinds", "ValueConstraint", "NumericConstraintValue", "MinLengthConstraint", "MaxLengthConstraint", "MinimumConstraint", "MaximumConstraint", "PatternConstraint", "PrecisionConstraint", "ScaleConstraint", "FieldConstraintSet", "TypeRef", "TypeRefKind", "PrimitiveTypeRef", "SemanticTypeRef", "TypeRefError", "TypeLookup", "TypeValidationContext", "TypeValidationRule", "TypeValidationResult", "TypeValidator", "TypeValidationDiagnostic", "TypeValidationSeverity", "TypeValidationPath", "FieldConstraintValidationRule", "SemanticReferenceValidationRule", "primitive_constraint_kinds", "StructuralTypeValidationRule"]
 
 # Same UUIDv4 representation strategy as SK-01, with distinct model-owned intent.
 _FIELD_ID = _re.compile(r"fld_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -552,3 +552,241 @@ class TypeDataComposition:
             raise DataFacetError("TYPE-DATA-006", "DataFacet v0 is applicable only to type-definition hosts.")
         if self.data is not None and not isinstance(self.data, DataFacet):
             raise DataFacetError("TYPE-DATA-005", "Exactly one DataFacet or None is permitted; duplicate facets and implicit merging are forbidden.")
+
+
+# TYPE-06: definition validation. No instance values, registry or physical adapters.
+class TypeValidationSeverity(_Enum):
+    ERROR = 'error'
+    WARNING = 'warning'
+    INFO = 'info'
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeValidationPath:
+    """Provisional typed model path pending SK-11, never semantic identity.
+
+    QName/field name render a readable coordinate; diagnostics retain FieldId
+    separately for identity across field reorder/rename. No ordinal/source bag.
+    """
+    type_name: QualifiedName
+    field_name: FieldName | None = None
+    constraint_kind: ConstraintKind | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.type_name, QualifiedName):
+            raise TypeError('Validation path requires a typed QualifiedName.')
+        if self.field_name is not None and not isinstance(self.field_name, FieldName):
+            raise TypeError('Validation path requires a typed FieldName.')
+        if self.constraint_kind is not None and (not isinstance(self.constraint_kind, ConstraintKind) or self.field_name is None):
+            raise TypeError('Constraint path requires a typed kind and a field coordinate.')
+
+    def __str__(self) -> str:
+        text = str(self.type_name)
+        if self.field_name is not None:
+            text += '.data.fields.' + str(self.field_name)
+        if self.constraint_kind is not None:
+            text += '.constraints.' + str(self.constraint_kind)
+        return text
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeValidationDiagnostic:
+    """Type-specific diagnostic seam, not a replacement/full SK-11 core model."""
+    code: str
+    message: str
+    severity: TypeValidationSeverity
+    path: TypeValidationPath
+    field_id: FieldId | None = None
+    target: ElementRef | None = None
+
+    def __post_init__(self):
+        if type(self.code) is not str or _re.fullmatch(r'TYPE-VAL-(?:[A-Z]+-)?[0-9]{3}', self.code) is None:
+            raise ValueError('Expected a stable TYPE-VAL diagnostic code.')
+        if type(self.message) is not str or not self.message:
+            raise ValueError('Diagnostic requires a non-empty message.')
+        if not isinstance(self.severity, TypeValidationSeverity) or type(self.path) is not TypeValidationPath:
+            raise TypeError('Diagnostic requires typed severity and path.')
+        if self.field_id is not None and not isinstance(self.field_id, FieldId):
+            raise TypeError('Diagnostic field identity must be a FieldId.')
+        if self.target is not None and type(self.target) is not ElementRef:
+            raise TypeError('Diagnostic target must be an identity-only ElementRef.')
+
+
+class TypeLookup(_Protocol):
+    """Read-only unambiguous semantic-element view, without registration/version selection.
+
+    A broad return permits distinct missing versus existing non-Type diagnostics.
+    Implementations must return the requested identity in a stable model snapshot.
+    """
+    def find(self, reference: ElementRef) -> SemanticElement | None:
+        ...
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeValidationContext:
+    """Mandatory supplied lookup: full validation never silently skips references."""
+    type_lookup: TypeLookup
+
+    def __post_init__(self):
+        if not callable(getattr(self.type_lookup, 'find', None)):
+            raise TypeError('Full type validation requires a read-only TypeLookup implementation.')
+
+
+class TypeValidationRule(_Protocol):
+    @property
+    def id(self) -> str:
+        ...
+
+    def validate(self, type_definition: TypeDataComposition, context: TypeValidationContext) -> tuple[TypeValidationDiagnostic, ...]:
+        ...
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeValidationResult:
+    diagnostics: tuple[TypeValidationDiagnostic, ...]
+
+    def __post_init__(self):
+        if type(self.diagnostics) not in (list, tuple) or any(type(d) is not TypeValidationDiagnostic for d in self.diagnostics):
+            raise TypeError('Validation result requires explicit typed diagnostics.')
+        object.__setattr__(self, 'diagnostics', tuple(self.diagnostics))
+
+    @property
+    def is_valid(self) -> bool:
+        return not any(d.severity is TypeValidationSeverity.ERROR for d in self.diagnostics)
+
+
+# Single immutable policy definition: rows and permitted sets cannot be mutated.
+_PRIMITIVE_CONSTRAINT_POLICY = (
+    (PrimitiveTypes.STRING, frozenset({ConstraintKinds.MIN_LENGTH, ConstraintKinds.MAX_LENGTH, ConstraintKinds.PATTERN})),
+    (PrimitiveTypes.BOOLEAN, frozenset()),
+    (PrimitiveTypes.INTEGER, frozenset({ConstraintKinds.MINIMUM, ConstraintKinds.MAXIMUM})),
+    (PrimitiveTypes.DECIMAL, frozenset({ConstraintKinds.MINIMUM, ConstraintKinds.MAXIMUM, ConstraintKinds.PRECISION, ConstraintKinds.SCALE})),
+    (PrimitiveTypes.DATE, frozenset()),
+    (PrimitiveTypes.DATETIME, frozenset()),
+    (PrimitiveTypes.UUID, frozenset()),
+)
+
+
+def primitive_constraint_kinds(primitive: PrimitiveType) -> frozenset[ConstraintKind]:
+    """Validation-owned v0 applicability policy, also usable for documentation."""
+    if type(primitive) is not PrimitiveType:
+        raise TypeError('Constraint policy requires a validated PrimitiveType.')
+    return next(kinds for candidate, kinds in _PRIMITIVE_CONSTRAINT_POLICY if candidate == primitive)
+
+
+def _type_diagnostic(code: str, message: str, definition: TypeDataComposition, field: FieldDefinition, kind: ConstraintKind | None = None, target: ElementRef | None = None) -> TypeValidationDiagnostic:
+    return TypeValidationDiagnostic(code, message, TypeValidationSeverity.ERROR, TypeValidationPath(definition.type_definition.qualified_name, field.name, kind), field.id, target)
+
+
+@_dataclass(frozen=True, slots=True)
+class StructuralTypeValidationRule:
+    """Check current host kind across the provisional retained Protocol boundary.
+
+    Canonical constructors own field completeness/uniqueness and one data slot;
+    do not repeat those algorithms. A mutable external host could change kind
+    after composition construction, so check its current semantic category.
+    """
+    @property
+    def id(self) -> str:
+        return 'TYPE-RULE-STRUCTURAL'
+
+    def validate(self, type_definition: TypeDataComposition, context: TypeValidationContext) -> tuple[TypeValidationDiagnostic, ...]:
+        if type_definition.type_definition.kind != SemanticElementKinds.TYPE_DEFINITION:
+            return (TypeValidationDiagnostic('TYPE-VAL-STRUCTURAL-001', 'Validation subject is not a type-definition; data facet applicability is not satisfied.', TypeValidationSeverity.ERROR, TypeValidationPath(type_definition.type_definition.qualified_name)),)
+        return ()
+
+
+@_dataclass(frozen=True, slots=True)
+class FieldConstraintValidationRule:
+    """Applicability/unsupported/integer exact-bound checks; no local revalidation."""
+    @property
+    def id(self) -> str:
+        return 'TYPE-RULE-FIELD-CONSTRAINT'
+
+    def validate(self, type_definition: TypeDataComposition, context: TypeValidationContext) -> tuple[TypeValidationDiagnostic, ...]:
+        diagnostics = []
+        fields = type_definition.data.fields if type_definition.data is not None else ()
+        for field in fields:
+            for constraint in field.constraints.value_constraints:
+                # Canonical constructors currently close payload admission. Keep
+                # this fail-closed boundary for future extensions/unsafe input;
+                # do not introduce arbitrary custom payloads to exercise it.
+                kind = getattr(constraint, 'kind', None)
+                if type(constraint) not in _BUILTIN_CONSTRAINT_TYPES:
+                    diagnostics.append(_type_diagnostic('TYPE-VAL-CONSTRAINT-003', 'Constraint is unsupported by the current semantic type validator.', type_definition, field, kind if isinstance(kind, ConstraintKind) else None))
+                    continue
+                if type(field.type) is SemanticTypeRef or kind not in primitive_constraint_kinds(field.type.primitive):
+                    diagnostics.append(_type_diagnostic('TYPE-VAL-CONSTRAINT-001', 'Constraint is not applicable to the declared field type.', type_definition, field, kind))
+                elif field.type.primitive == PrimitiveTypes.INTEGER and type(constraint) in (MinimumConstraint, MaximumConstraint) and '.' in str(constraint.value):
+                    # TYPE-04 canonicalizes fractional trailing zeros: 1.0 is 1.
+                    # Exact textual integrality, no float/int conversion or width.
+                    diagnostics.append(_type_diagnostic('TYPE-VAL-CONSTRAINT-002', 'Integer field bound must be an integral value.', type_definition, field, kind))
+        return tuple(diagnostics)
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceValidationRule:
+    """Check current field targets once, without recursively validating target data."""
+    @property
+    def id(self) -> str:
+        return 'TYPE-RULE-SEMANTIC-REFERENCE'
+
+    def validate(self, type_definition: TypeDataComposition, context: TypeValidationContext) -> tuple[TypeValidationDiagnostic, ...]:
+        diagnostics = []
+        fields = type_definition.data.fields if type_definition.data is not None else ()
+        for field in fields:
+            if type(field.type) is not SemanticTypeRef:
+                continue
+            reference = field.type.target
+            target = context.type_lookup.find(reference)
+            if target is None:
+                diagnostics.append(_type_diagnostic('TYPE-VAL-REF-001', 'Unable to resolve semantic type reference.', type_definition, field, target=reference))
+                continue
+            expected = (("id", SemanticElementId), ("qualified_name", QualifiedName), ("context", SemanticContextRef), ("kind", SemanticElementKind), ("version", SemanticVersion))
+            if any(not isinstance(getattr(target, name, None), value_type) for name, value_type in expected):
+                raise TypeError('TypeLookup returned an object outside its typed SemanticElement contract.')
+            if target.id != reference.element_id:
+                diagnostics.append(_type_diagnostic('TYPE-VAL-REF-003', 'Lookup returned a different semantic identity than requested.', type_definition, field, target=reference))
+            elif target.kind != SemanticElementKinds.TYPE_DEFINITION:
+                diagnostics.append(_type_diagnostic('TYPE-VAL-REF-002', 'Semantic type reference does not target a type-definition.', type_definition, field, target=reference))
+        return tuple(diagnostics)
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeValidator:
+    """Full current-definition pipeline: mandatory core plus explicit extra rules.
+
+    TYPE-01 is absent; the existing TypeDataComposition host/data seam is the
+    actual accepted input. Constructors protect structural/local invariants.
+    Rules run in core order, then supplied order; field/kind order is preserved.
+    No intrinsic-only mode, missing lookup, global discovery, recursion or cache.
+    Additional rules cannot replace/disable core checks or repair the model.
+    """
+    additional_rules: tuple[TypeValidationRule, ...] = ()
+
+    def __post_init__(self):
+        if type(self.additional_rules) not in (tuple, list):
+            raise TypeError('Additional rules require an explicit ordered collection.')
+        rules = tuple(self.additional_rules)
+        ids = {StructuralTypeValidationRule().id, FieldConstraintValidationRule().id, SemanticReferenceValidationRule().id}
+        for rule in rules:
+            id = getattr(rule, 'id', None)
+            if type(id) is not str or _re.fullmatch(r'TYPE-RULE-[A-Z0-9]+(?:-[A-Z0-9]+)*', id) is None or not callable(getattr(rule, 'validate', None)):
+                raise TypeError('Expected a typed rule with stable ID and validate method.')
+            if id in ids:
+                raise ValueError('Duplicate validation rule ID; core rules cannot be replaced.')
+            ids.add(id)
+        object.__setattr__(self, 'additional_rules', rules)
+
+    @property
+    def rules(self) -> tuple[TypeValidationRule, ...]:
+        return (StructuralTypeValidationRule(), FieldConstraintValidationRule(), SemanticReferenceValidationRule(), *self.additional_rules)
+
+    def validate(self, type_definition: TypeDataComposition, context: TypeValidationContext) -> TypeValidationResult:
+        if type(type_definition) is not TypeDataComposition or type(context) is not TypeValidationContext:
+            raise TypeError('Full validation requires canonical TypeDataComposition and explicit TypeValidationContext.')
+        diagnostics = []
+        for rule in self.rules:
+            result = TypeValidationResult(rule.validate(type_definition, context))
+            diagnostics.extend(result.diagnostics)
+        return TypeValidationResult(diagnostics)

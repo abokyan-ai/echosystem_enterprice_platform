@@ -1,5 +1,7 @@
 # TYPE-05: Type References
 
+Current TYPE-06 update: [Type Validation Rules](type-validation.md) now judge primitive applicability, Integer bound shape and semantic targets separately from representation. Original stage-specific deferred statements below remain historical; constructors and public reference/constraint shapes are unchanged.
+
 ## Existing state and reconciliation
 
 Inspected main has FieldDefinition(id,name,constraints), DataFacet and TypeDataComposition from TYPE-02..04, plus SK-08 stable ElementRef and exact ElementVersionRef. No existing TypeRef/placeholder/raw production field type or SK-09 PrimitiveType exists. No duplicate TypeRef is introduced. TYPE-01 production TypeDefinition and SK-11 Diagnostics Model remain missing.
