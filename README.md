@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-ARC-01, ARC-02 and ARC-03 establish a contract-driven modular monolith repository. It does **not** implement the semantic platform, compiler, runtime behavior, persistence or UI.
+A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler behavior, application runtime, persistence and UI remain future stages.
 
 ## Quick start
 
@@ -11,14 +11,11 @@ git clone https://github.com/abokyan-ai/echosystem_enterprice_platform.git
 cd echosystem_enterprice_platform
 python3 scripts/dev.py install
 python3 scripts/dev.py build
-python3 scripts/dev.py test
-python3 scripts/dev.py test:architecture
-python3 scripts/dev.py doctor
 python3 scripts/dev.py check:architecture
 python3 scripts/dev.py dependencies:json
 ```
 
-`install` validates the standard-library workspace; it does not install packages. Windows can use `python` instead of `python3`. Optional Make targets: `install`, `build`, `test`, `test-architecture`, `doctor`, `lint`.
+`install` validates the standard-library workspace; it does not install packages. Windows can use `python` instead of `python3`. Current static Make targets include `install`, `build` and `lint`. Comprehensive/runtime test commands exist but are deferred under [AGENTS.md](AGENTS.md); do not run them during implementation.
 
 Build checks syntax, architectural boundaries and importable public entry points, and creates `build/platform-workspace.zip` plus isolated bytecode. Generated output is not source. This is a source workspace, not a released PyPI distribution.
 
@@ -28,7 +25,7 @@ Build checks syntax, architectural boundaries and importable public entry points
 
 See [architecture](docs/architecture/README.md), [repository structure](docs/architecture/repository-structure.md), [dependency rules](docs/architecture/dependency-rules.md), [module guidelines](docs/architecture/module-guidelines.md) and [contributing](CONTRIBUTING.md).
 
-The repository contains seven physical source modules: five platform foundations, one independent hosting contract boundary and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
+The repository contains eight physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
 
 There is no runnable web/mobile UI in ARC-01. Reference Mini Sales is reserved for the first executable vertical slice.
 
@@ -135,3 +132,9 @@ TYPE-06 TypeLookup remains unchanged. Direct registry lookup supports zero/one-v
 ### Mandatory deferred test documentation
 
 Current and subsequent implementation tasks must preserve complete test specifications in `test-archive/{TASK-ID}/README.md` and `{TASK-ID}-deferred-test-spec.md` without executing the deferred suites. Each case starts as `NOT_RUN — DEFERRED`; completion reports state `DEFERRED / NOT VERIFIED` and zero deferred tests executed. Historical execution records remain intact. Existing CI performs static architecture/syntax/build checks while comprehensive and runtime checks are explicitly skipped under the deferral flag; green static CI is not proof of semantic correctness. See [repository workflow](AGENTS.md) and [TYPE-07 test archive](test-archive/TYPE-07/README.md). TYPE-08 has not been started.
+
+### MOD-01 — Authoring Model Schema v0
+
+The model-authoring module defines frozen authoring documents, type/data/field/constraint declarations and four explicit type-expression variants. Its pure structural validator accepts decoded abstract documents, rejects unknown shapes/properties/kinds and local duplicates, and preserves unresolved names, exact authored references and original declaration/literal order. It does not resolve names, generate canonical definitions, register types or invoke semantic applicability validation.
+
+Implementation follows current Python contracts; TYPE-01/SK-11/TYPE-08 and full SK-09 integration remain open. The eight-module inventory includes authoring, without changing the five foundation activation markers. [Mini Sales source](examples/authoring/mini-sales.json) is included but not executed. Testing status: **DEFERRED / NOT VERIFIED**, deferred-suite executions **0**. See [schema/assessment](docs/model/authoring-schema.md), [ADR-0023](docs/architecture/decisions/ADR-0023-authoring-schema-representation-boundary.md), [task archive](test-archive/MOD-01/README.md) and [static-check record](docs/architecture/mod01-verification.md). No next stage is started automatically.
