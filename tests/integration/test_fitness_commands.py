@@ -12,7 +12,7 @@ class FitnessCommandTests(unittest.TestCase):
         return subprocess.run([sys.executable, "scripts/dev.py", "fitness:json", *options], cwd=ROOT, capture_output=True, text=True)
 
     def test_full_report_and_specific_rule(self):
-        for options, count in (((), 41), (("--rule", "ARCH-FIT-DEP-001"), 1)):
+        for options, count in (((), 42), (("--rule", "ARCH-FIT-DEP-001"), 1)):
             result = self.command(*options)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
