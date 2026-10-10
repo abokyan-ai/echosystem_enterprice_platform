@@ -4,7 +4,7 @@ import re as _re
 from typing import Protocol as _Protocol
 
 MODULE_NAME = "semantic-kernel"
-__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError", "ElementRef", "ElementRefError"]
+__all__ = ["MODULE_NAME", "SemanticElementId", "SemanticElementIdError", "Namespace", "NamespaceError", "QualifiedName", "QualifiedNameError", "SemanticContextRef", "SemanticContextRefError", "SemanticElement", "SemanticElementKind", "SemanticElementKindError", "SemanticElementKinds", "SemanticVersion", "SemanticVersionError", "ElementVersionRef", "ElementVersionRefError", "ElementRef", "ElementRefError", "FacetKind", "FacetKindError", "FacetKinds", "FacetDefinition", "FacetApplicability", "FacetApplicabilityError"]
 
 # The version/variant bits are validated, not rewritten; no UUID generation occurs here.
 _SEMANTIC_ID = _re.compile(r"sem_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
@@ -256,6 +256,18 @@ class SemanticContextRef:
 _KIND_SEGMENT = _re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 
 
+def _canonical_kind(value, error_type, required_code, invalid_code, label):
+    """Shared lexical validation only; public kind types/vocabularies stay distinct."""
+    if value is None or isinstance(value, str) and (not value or str.isspace(value)):
+        raise error_type(required_code, label + " is required.")
+    if not isinstance(value, str):
+        raise error_type(invalid_code, label + " requires a string representation.")
+    for index, segment in enumerate(str.split(value, ".")):
+        if _KIND_SEGMENT.fullmatch(segment) is None:
+            raise error_type(invalid_code, f"Invalid {str.lower(label)} format at segment {index}: expected lowercase ASCII kebab-case starting with a letter; empty segments, whitespace and other separators are forbidden.", index)
+    return str.__str__(value)
+
+
 class SemanticElementKindError(ValueError):
     """Lexical classification diagnostic, not an unsupported-kind result."""
     def __init__(self, code: str, message: str, segment_index: int | None = None):
@@ -275,15 +287,7 @@ class SemanticElementKind:
     value: str
 
     def __post_init__(self):
-        value = self.value
-        if value is None or isinstance(value, str) and (not value or str.isspace(value)):
-            raise SemanticElementKindError("SEM-KIND-001", "Semantic element kind is required.")
-        if not isinstance(value, str):
-            raise SemanticElementKindError("SEM-KIND-002", "Semantic element kind requires a string representation.")
-        for index, segment in enumerate(str.split(value, ".")):
-            if _KIND_SEGMENT.fullmatch(segment) is None:
-                raise SemanticElementKindError("SEM-KIND-002", f"Invalid semantic element kind format at segment {index}: expected lowercase ASCII kebab-case starting with a letter; empty segments, whitespace and other separators are forbidden.", index)
-        object.__setattr__(self, "value", str.__str__(value))
+        object.__setattr__(self, "value", _canonical_kind(self.value, SemanticElementKindError, "SEM-KIND-001", "SEM-KIND-002", "Semantic element kind"))
 
     @classmethod
     def parse(cls, value: str) -> "SemanticElementKind":
@@ -527,3 +531,106 @@ class SemanticElement(_Protocol):
     def version(self) -> SemanticVersion:
         """Explicit exact definition version; not a package/artifact version."""
         ...
+
+
+class FacetKindError(ValueError):
+    """Lexical facet concern diagnostic, independent of compiler support."""
+    def __init__(self, code: str, message: str, segment_index: int | None = None):
+        self.code = code
+        self.message = message
+        self.segment_index = segment_index
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class FacetKind:
+    """Open canonical concern identifier, distinct from an element category."""
+    value: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "value", _canonical_kind(self.value, FacetKindError, "SEM-FACET-KIND-001", "SEM-FACET-KIND-002", "Facet kind"))
+
+    @classmethod
+    def parse(cls, value: str) -> "FacetKind":
+        return cls(value)
+
+    @classmethod
+    def try_parse(cls, value: object) -> "FacetKind | None":
+        """Return None for lexical diagnostics; unexpected failures propagate."""
+        try:
+            return cls(value)
+        except FacetKindError:
+            return None
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@_dataclass(frozen=True, slots=True)
+class _CoreFacetKinds:
+    """Immutable well-known concern catalog, never a parser allowlist/registry."""
+    DATA: FacetKind = FacetKind("data")
+    BEHAVIOR: FacetKind = FacetKind("behavior")
+    LIFECYCLE: FacetKind = FacetKind("lifecycle")
+    WORKFLOW: FacetKind = FacetKind("workflow")
+    RULE: FacetKind = FacetKind("rule")
+    POLICY: FacetKind = FacetKind("policy")
+    SECURITY: FacetKind = FacetKind("security")
+    API: FacetKind = FacetKind("api")
+    EVENT: FacetKind = FacetKind("event")
+    PERSISTENCE: FacetKind = FacetKind("persistence")
+    EXPERIENCE: FacetKind = FacetKind("experience")
+    SEARCH: FacetKind = FacetKind("search")
+    AUDIT: FacetKind = FacetKind("audit")
+    INTEGRATION: FacetKind = FacetKind("integration")
+
+    @property
+    def ALL(self) -> tuple[FacetKind, ...]:
+        return (self.DATA, self.BEHAVIOR, self.LIFECYCLE, self.WORKFLOW, self.RULE, self.POLICY, self.SECURITY, self.API, self.EVENT, self.PERSISTENCE, self.EXPERIENCE, self.SEARCH, self.AUDIT, self.INTEGRATION)
+
+    def is_core(self, kind: FacetKind) -> bool:
+        """Known vocabulary only, without support/ownership/applicability claims."""
+        return isinstance(kind, FacetKind) and kind in self.ALL
+
+
+FacetKinds = _CoreFacetKinds()
+
+
+class FacetDefinition(_Protocol):
+    """Minimal composed semantic concern; concrete snapshots own local invariants.
+
+    Not a SemanticElement, runtime handler or untyped payload container.
+    """
+    @property
+    def kind(self) -> FacetKind:
+        """Explicit typed concern contributed by this facet."""
+        ...
+
+
+class FacetApplicabilityError(ValueError):
+    """Local representation diagnostic, not a composition/handler verdict."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+@_dataclass(frozen=True, slots=True)
+class FacetApplicability:
+    """Declarative allowed host categories for one facet concern.
+
+    Explicit immutable kinds only; an empty set allows nowhere, never everywhere.
+    No presence, requirement, multiplicity, dependency or conflict semantics.
+    """
+    facet_kind: FacetKind
+    allowed_element_kinds: frozenset[SemanticElementKind]
+
+    def __post_init__(self):
+        if self.facet_kind is None:
+            raise FacetApplicabilityError("SEM-FACET-APP-001", "Facet applicability requires a facet kind.")
+        if not isinstance(self.facet_kind, FacetKind):
+            raise FacetApplicabilityError("SEM-FACET-APP-002", "Facet kind must be a validated FacetKind value.")
+        if type(self.allowed_element_kinds) is not frozenset:
+            raise FacetApplicabilityError("SEM-FACET-APP-003", "Allowed element kinds require an explicit frozenset of SemanticElementKind values.")
+        if any(not isinstance(kind, SemanticElementKind) for kind in self.allowed_element_kinds):
+            raise FacetApplicabilityError("SEM-FACET-APP-004", "Every allowed host category must be a validated SemanticElementKind, never a string or runtime class.")
