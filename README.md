@@ -164,3 +164,11 @@ See [contract and unexecuted Mini Sales usage](docs/model/canonical-model.md), [
 Current support is the existing five-value host/data seam, not a missing full TYPE-01 contract. General SK-11 is also absent; exact field-version pins fail rather than weaken identity-only TYPE-05. See [contract/usage](docs/model/canonicalizer.md), [ADR-0027](docs/architecture/decisions/ADR-0027-explicit-canonicalization-boundary.md) and [implementation/static evidence](docs/architecture/mod05-verification.md).
 
 [MOD-05 archive](test-archive/MOD-05/README.md): **143** documented scenarios, **0** tests implemented/executed, **NOT_RUN — DEFERRED / NOT VERIFIED**. The Mini Sales snippet was not executed. Static checks do not verify semantic behavior. Stop after MOD-05.
+
+## MOD-06 — Explicit namespace resolution
+
+`model_authoring.public.NamespaceResolver` resolves existing name/identity/exact expressions against a frozen single-context symbol environment. Local-name search uses current plus explicitly supplied namespaces; qualified names are exact; resolver-only explicit aliases never override ordinary dotted names. Ambiguity fails before kind/version requirements can choose an identity. Identity outcomes remain unversioned; exact pins remain exact.
+
+A type-only adapter snapshots explicitly selected actual TYPE-07 TypeLookup identities, and a minimal bridge returns the existing MOD-05 ResolvedFieldBinding without canonicalization. Optional existing tooling attaches actual MOD-03 locations. No new module/dependency/endpoint/ORM, registry mutation, complete reference-binding pipeline or MOD-07. General SK-11/full TYPE-01 and exact-field TYPE-05 compatibility remain documented gaps.
+
+[Resolver/usage](docs/model/namespace-resolver.md), [ADR-0028](docs/architecture/decisions/ADR-0028-explicit-namespace-visibility.md), [implementation/static record](docs/architecture/mod06-verification.md), [archive](test-archive/MOD-06/README.md): **146** documented scenarios; **0** tests implemented/executed; **NOT_RUN — DEFERRED / NOT VERIFIED**. Examples and resolver scenarios were not executed. Static checks are separate evidence.
