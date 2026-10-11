@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1.0",
+  "context": "sem_550e8400-e29b-41d4-a716-999999999999",
+  "namespace": "sales",
+  "definitions": [
+    {
+      "kind": "type",
+      "id": "sem_550e8400-e29b-41d4-a716-000000000003",
+      "name": "Department",
+      "version": "1.0.0",
+      "facets": [{"kind": "data", "fields": [
+        {
+          "id": "fld_550e8400-e29b-41d4-a716-000000000011",
+          "name": "manager",
+          "type": {"kind": "semantic-name", "name": "Employee"},
+          "constraints": {"presence": "optional", "nullability": "non-null", "values": []}
+        }
+      ]}]
+    },
+    {
+      "kind": "type",
+      "id": "sem_550e8400-e29b-41d4-a716-000000000002",
+      "name": "Employee",
+      "version": "1.0.0",
+      "facets": [{"kind": "data", "fields": [
+        {
+          "id": "fld_550e8400-e29b-41d4-a716-000000000012",
+          "name": "manager",
+          "type": {"kind": "semantic-name", "name": "sales.Employee"},
+          "constraints": {"presence": "optional", "nullability": "nullable", "values": []}
+        }
+      ]}]
+    },
+    {
+      "kind": "type",
+      "id": "sem_550e8400-e29b-41d4-a716-000000000001",
+      "name": "Customer",
+      "version": "1.0.0",
+      "facets": [{"kind": "data", "fields": [
+        {
+          "id": "fld_550e8400-e29b-41d4-a716-000000000013",
+          "name": "name",
+          "type": {"kind": "primitive", "primitive": "string"},
+          "constraints": {"presence": "required", "nullability": "non-null", "values": [{"kind": "max-length", "value": 200}]}
+        }
+      ]}]
+    }
+  ]
+}

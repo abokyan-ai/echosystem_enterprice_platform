@@ -1,9 +1,10 @@
-"""MOD-01 schema, MOD-05 canonicalization and MOD-06 scoped name resolution.
+"""MOD-01 schema, MOD-05 canonicalization and MOD-06/07 scoped resolution.
 
 Input is a decoded JSON-compatible abstract tree, never JSON/YAML source text.
 Schema projection returns authoring snapshots; canonicalization is a separate
 operation requiring typed resolution bindings. Namespace resolution is a
-separate explicit-environment operation; no registry mutation, compiler,
+separate explicit-environment operation; reference requirements and complete
+binding readiness are another boundary. No registry mutation, compiler,
 runtime or parser dependency.
 """
 from dataclasses import dataclass as _dataclass, field as _dataclass_field
@@ -1323,4 +1324,380 @@ __all__ += [
     'NamespaceResolutionFailure', 'NamespaceResolutionDiagnostic',
     'NamespaceSymbolSnapshotResult', 'TypeLookupSymbolAdapter',
     'local_authoring_symbols', 'NamespaceFieldBindingResult', 'bind_namespace_target',
+]
+
+
+# MOD-07: reference requirements, verified bindings and complete authoring input.
+class ReferenceVersionRequirement(_Enum):
+    IDENTITY_ONLY = 'identity-only'
+    EXACT_VERSION = 'exact-version'
+
+
+class ReferenceConsumer(_Enum):
+    SEMANTIC_DEFINITION = 'semantic-definition'
+    SEMANTIC_TYPE_FIELD = 'semantic-type-field'
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceRequirement:
+    expected_kind: SemanticElementKind
+    version_requirement: ReferenceVersionRequirement
+    consumer: ReferenceConsumer = ReferenceConsumer.SEMANTIC_DEFINITION
+
+    def __post_init__(self) -> None:
+        if type(self.expected_kind) is not SemanticElementKind or type(self.version_requirement) is not ReferenceVersionRequirement or type(self.consumer) is not ReferenceConsumer:
+            raise TypeError('Reference requirements need explicit typed kind/version/consumer values.')
+        if self.consumer is ReferenceConsumer.SEMANTIC_TYPE_FIELD and self.expected_kind != SemanticElementKinds.TYPE_DEFINITION:
+            raise TypeError('TYPE-05 semantic fields explicitly require type-definition kind.')
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceResolutionRequest:
+    expression: NamespaceNameExpression
+    context: SemanticContextRef
+    requirement: SemanticReferenceRequirement
+    exact_version: SemanticVersion | None = None
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.expression) not in _NAMESPACE_EXPRESSION_TYPES or type(self.requirement) is not SemanticReferenceRequirement:
+            raise TypeError('Semantic reference requests require supported expressions and explicit requirements.')
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId:
+            raise TypeError('Reference requests require canonical semantic context.')
+        if self.exact_version is not None and type(self.exact_version) is not SemanticVersion:
+            raise TypeError('An explicit reference pin must use SemanticVersion.')
+        _resolution_path(self.path)
+
+
+class ReferenceEvidenceOrigin(_Enum):
+    LOCAL_DECLARATION = 'local-declaration'
+    VISIBLE_SYMBOL = 'visible-symbol'
+
+
+@_dataclass(frozen=True, slots=True)
+class ReferenceTargetEvidence:
+    symbol: SemanticSymbol
+    origin: ReferenceEvidenceOrigin
+
+    def __post_init__(self) -> None:
+        if type(self.symbol) is not SemanticSymbol or type(self.origin) is not ReferenceEvidenceOrigin:
+            raise TypeError('Reference evidence requires an existing declared symbol and explicit source category.')
+
+
+def _evidence_order(evidence: ReferenceTargetEvidence) -> tuple:
+    return (*_symbol_order(evidence.symbol), evidence.origin.value)
+
+
+@_dataclass(frozen=True, slots=True)
+class ResolvedReferenceBinding:
+    reference: ElementRef | ElementVersionRef
+    context: SemanticContextRef
+    requirement: SemanticReferenceRequirement
+    evidence: tuple[ReferenceTargetEvidence, ...]
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        _resolution_reference(self.reference)
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId or type(self.requirement) is not SemanticReferenceRequirement:
+            raise TypeError('Verified reference binding requires explicit typed context and requirements.')
+        evidence = tuple(sorted(set(_ordered(self.evidence, ReferenceTargetEvidence)), key=_evidence_order))
+        if not evidence:
+            raise ValueError('A structurally valid reference alone is not target existence evidence.')
+        expected_form = ElementRef if self.requirement.version_requirement is ReferenceVersionRequirement.IDENTITY_ONLY else ElementVersionRef
+        if type(self.reference) is not expected_form:
+            raise ValueError('Reference shape must preserve the declared version requirement.')
+        if self.requirement.consumer is ReferenceConsumer.SEMANTIC_TYPE_FIELD and type(self.reference) is not ElementRef:
+            raise ValueError('Current TYPE-05 cannot represent exact semantic field pins.')
+        for item in evidence:
+            symbol = item.symbol
+            if symbol.reference.element_id != self.reference.element_id or symbol.context != self.context or symbol.kind != self.requirement.expected_kind or type(self.reference) is ElementVersionRef and symbol.reference.version != self.reference.version:
+                raise ValueError('Every retained evidence coordinate must agree with the verified target.')
+        object.__setattr__(self, 'evidence', evidence)
+        _resolution_path(self.path)
+
+
+class SemanticReferenceFailure(_Enum):
+    INVALID_REQUEST = 'MOD-REFERENCE-001'
+    INVALID_ENVIRONMENT = 'MOD-REFERENCE-002'
+    TARGET_NOT_FOUND = 'MOD-REFERENCE-003'
+    AMBIGUOUS_TARGET = 'MOD-REFERENCE-004'
+    CONTEXT_MISMATCH = 'MOD-REFERENCE-005'
+    KIND_MISMATCH = 'MOD-REFERENCE-006'
+    EXACT_VERSION_NOT_FOUND = 'MOD-REFERENCE-007'
+    UNSUPPORTED_REFERENCE_FORM = 'MOD-REFERENCE-008'
+    REQUIRED_VERSION_MISSING = 'MOD-REFERENCE-009'
+    INVALID_LOCAL_BINDING = 'MOD-REFERENCE-010'
+    CONFLICTING_TARGET_EVIDENCE = 'MOD-REFERENCE-011'
+    REQUIRED_BINDING_MISSING = 'MOD-REFERENCE-012'
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceDiagnostic:
+    """Narrow actual diagnostic seam pending missing general SK-11."""
+    code: SemanticReferenceFailure
+    message: str
+    request: SemanticReferenceResolutionRequest | None = None
+    target_reference: ElementRef | ElementVersionRef | None = None
+    namespace_diagnostic: NamespaceResolutionDiagnostic | None = None
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not SemanticReferenceFailure or type(self.message) is not str or not self.message:
+            raise TypeError('Reference diagnostics require a known code and message.')
+        if self.request is not None and type(self.request) is not SemanticReferenceResolutionRequest or self.namespace_diagnostic is not None and type(self.namespace_diagnostic) is not NamespaceResolutionDiagnostic:
+            raise TypeError('Diagnostic request/delegated namespace failure must be typed.')
+        if self.target_reference is not None:
+            _resolution_reference(self.target_reference)
+        _resolution_path(self.path)
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return TypeValidationSeverity.ERROR
+
+    @property
+    def related_paths(self) -> tuple[AuthoringSchemaPath, ...]:
+        return () if self.namespace_diagnostic is None else self.namespace_diagnostic.related_paths
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceResolutionResult:
+    binding: ResolvedReferenceBinding | None
+    diagnostics: tuple[SemanticReferenceDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, SemanticReferenceDiagnostic))
+        if (self.binding is None) != bool(self.diagnostics) or self.binding is not None and type(self.binding) is not ResolvedReferenceBinding:
+            raise ValueError('Reference result requires a verified binding or nonempty failure diagnostics.')
+
+    @property
+    def is_success(self) -> bool:
+        return self.binding is not None
+
+
+class ReferenceBatchStatus(_Enum):
+    ALL_RESOLVED = 'all-resolved'
+    PARTIALLY_RESOLVED = 'partially-resolved'
+    NONE_RESOLVED = 'none-resolved'
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceBatchResult:
+    results: tuple[SemanticReferenceResolutionResult, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'results', _ordered(self.results, SemanticReferenceResolutionResult))
+
+    @property
+    def status(self) -> ReferenceBatchStatus:
+        successes = sum(r.is_success for r in self.results)
+        if successes == len(self.results):
+            return ReferenceBatchStatus.ALL_RESOLVED
+        return ReferenceBatchStatus.PARTIALLY_RESOLVED if successes else ReferenceBatchStatus.NONE_RESOLVED
+
+    @property
+    def all_required_bindings_satisfied(self) -> bool:
+        return self.status is ReferenceBatchStatus.ALL_RESOLVED
+
+    @property
+    def canonicalizer_compatible(self) -> bool:
+        return self.all_required_bindings_satisfied and all(r.binding.requirement.consumer is ReferenceConsumer.SEMANTIC_TYPE_FIELD and type(r.binding.reference) is ElementRef for r in self.results)
+
+    @property
+    def diagnostics(self) -> tuple[SemanticReferenceDiagnostic, ...]:
+        return tuple(d for result in self.results for d in result.diagnostics)
+
+
+_NAMESPACE_REFERENCE_CODES = _MappingProxyType({
+    NamespaceResolutionFailure.INVALID_EXPRESSION: SemanticReferenceFailure.INVALID_REQUEST,
+    NamespaceResolutionFailure.INVALID_ENVIRONMENT: SemanticReferenceFailure.INVALID_ENVIRONMENT,
+    NamespaceResolutionFailure.NAME_NOT_FOUND: SemanticReferenceFailure.TARGET_NOT_FOUND,
+    NamespaceResolutionFailure.AMBIGUOUS_NAME: SemanticReferenceFailure.AMBIGUOUS_TARGET,
+    NamespaceResolutionFailure.ALIAS_NOT_FOUND: SemanticReferenceFailure.INVALID_REQUEST,
+    NamespaceResolutionFailure.ALIAS_COLLISION: SemanticReferenceFailure.INVALID_ENVIRONMENT,
+    NamespaceResolutionFailure.CONTEXT_MISMATCH: SemanticReferenceFailure.CONTEXT_MISMATCH,
+    NamespaceResolutionFailure.KIND_MISMATCH: SemanticReferenceFailure.KIND_MISMATCH,
+    NamespaceResolutionFailure.VERSION_NOT_FOUND: SemanticReferenceFailure.EXACT_VERSION_NOT_FOUND,
+    NamespaceResolutionFailure.SYMBOL_COLLISION: SemanticReferenceFailure.CONFLICTING_TARGET_EVIDENCE,
+    NamespaceResolutionFailure.UNBOUND_LOOKUP_VERSION: SemanticReferenceFailure.INVALID_ENVIRONMENT,
+    NamespaceResolutionFailure.INVALID_BINDING: SemanticReferenceFailure.INVALID_LOCAL_BINDING,
+})
+
+
+def _reference_failure(code: SemanticReferenceFailure, message: str, request: SemanticReferenceResolutionRequest | None = None, target: ElementRef | ElementVersionRef | None = None, path: AuthoringSchemaPath | None = None) -> SemanticReferenceResolutionResult:
+    return SemanticReferenceResolutionResult(None, (SemanticReferenceDiagnostic(code, message, request, target, path=request.path if request is not None else path),))
+
+
+def _reference_evidence_index(environment: NamespaceResolutionEnvironment) -> dict[SemanticElementId, tuple[ReferenceTargetEvidence, ...]]:
+    groups: dict[SemanticElementId, list[ReferenceTargetEvidence]] = {}
+    for symbols, origin in ((environment.local_symbols, ReferenceEvidenceOrigin.LOCAL_DECLARATION), (environment.visible_symbols, ReferenceEvidenceOrigin.VISIBLE_SYMBOL)):
+        for symbol in symbols:
+            groups.setdefault(symbol.reference.element_id, []).append(ReferenceTargetEvidence(symbol, origin))
+    return {identity: tuple(sorted(set(items), key=_evidence_order)) for identity, items in groups.items()}
+
+
+@_dataclass(frozen=True, slots=True)
+class ResolvedAuthoringInputResult:
+    resolved_model: ResolvedAuthoringModel | None
+    references: SemanticReferenceBatchResult
+    diagnostics: tuple[SemanticReferenceDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.references) is not SemanticReferenceBatchResult:
+            raise TypeError('Authoring readiness requires the actual finite reference batch result.')
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, SemanticReferenceDiagnostic))
+        if (self.resolved_model is None) != bool(self.diagnostics) or self.resolved_model is not None and type(self.resolved_model) is not ResolvedAuthoringModel:
+            raise ValueError('Authoring input is complete or has failure diagnostics; no partial successful input.')
+        if self.resolved_model is not None and not self.references.canonicalizer_compatible:
+            raise ValueError('A complete authoring input cannot advertise unresolved/incompatible reference bindings.')
+        reported = frozenset(self.diagnostics)
+        if any(d not in reported for d in self.references.diagnostics):
+            raise ValueError('Authoring readiness must preserve every batch failure diagnostic.')
+        if self.resolved_model is not None:
+            document = self.resolved_model.document
+            declarations = {b.declaration_index: b for b in self.resolved_model.declarations}
+            if len(declarations) != len(self.resolved_model.declarations) or set(declarations) != set(range(len(document.definitions))):
+                raise ValueError('Ready authoring input must cover every declaration exactly once.')
+            reference_index = 0
+            for index, declaration in enumerate(document.definitions):
+                bound = declarations[index]
+                if bound.id != SemanticElementId.parse(declaration.id) or bound.version != SemanticVersion.parse(declaration.version) or bound.context != document.context or bound.qualified_name != QualifiedName.create(Namespace.parse(document.namespace), declaration.name):
+                    raise ValueError('Ready authoring declaration bindings must preserve their authored coordinates.')
+                fields = {(f.facet_index, f.field_index): f for f in bound.fields}
+                required = {(a, b) for a, facet in enumerate(declaration.facets) for b in range(len(facet.fields))}
+                if len(fields) != len(bound.fields) or set(fields) != required:
+                    raise ValueError('Ready authoring input must cover every field exactly once.')
+                for facet_index, facet in enumerate(declaration.facets):
+                    for field_index, field in enumerate(facet.fields):
+                        supplied = fields[(facet_index, field_index)]
+                        if supplied.field_id != FieldId.parse(field.id):
+                            raise ValueError('Ready authoring fields must retain their stable FieldIds.')
+                        if type(field.type) is AuthoringPrimitiveExpression:
+                            if supplied.target is not None:
+                                raise ValueError('Primitive field bindings must bypass semantic target resolution.')
+                            continue
+                        if reference_index >= len(self.references.results):
+                            raise ValueError('A required semantic occurrence is missing from the reference batch.')
+                        verified = self.references.results[reference_index].binding
+                        reference_index += 1
+                        path = AuthoringSchemaPath(('definitions', index, 'facets', facet_index, 'fields', field_index, 'type'))
+                        if verified.path != path or supplied.target != verified.reference or verified.context != document.context:
+                            raise ValueError('Each ready semantic field must match its exact verified source occurrence.')
+                        if type(field.type) is AuthoringVersionExpression or type(field.type) is AuthoringIdentityExpression and field.type.reference != verified.reference:
+                            raise ValueError('Ready semantic fields cannot discard an authored identity or exact version pin.')
+            if reference_index != len(self.references.results):
+                raise ValueError('Ready authoring input cannot contain unrelated extra reference results.')
+
+    @property
+    def ready_for_canonicalization(self) -> bool:
+        return self.resolved_model is not None
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticReferenceResolver:
+    namespace_resolver: NamespaceResolver = _dataclass_field(default_factory=NamespaceResolver)
+
+    def __post_init__(self) -> None:
+        if type(self.namespace_resolver) is not NamespaceResolver:
+            raise TypeError('Reference resolution delegates to the actual stateless MOD-06 service.')
+
+    def resolve(self, request: SemanticReferenceResolutionRequest, environment: NamespaceResolutionEnvironment) -> SemanticReferenceResolutionResult:
+        evidence = _reference_evidence_index(environment) if type(environment) is NamespaceResolutionEnvironment else {}
+        return self._resolve(request, environment, evidence)
+
+    def _resolve(self, request: SemanticReferenceResolutionRequest, environment: NamespaceResolutionEnvironment, evidence_index: _Mapping[SemanticElementId, tuple[ReferenceTargetEvidence, ...]]) -> SemanticReferenceResolutionResult:
+        if type(request) is not SemanticReferenceResolutionRequest:
+            return _reference_failure(SemanticReferenceFailure.INVALID_REQUEST, 'Supply a typed semantic reference request; primitive and instance references are outside this operation.')
+        if type(environment) is not NamespaceResolutionEnvironment:
+            return _reference_failure(SemanticReferenceFailure.INVALID_ENVIRONMENT, 'Supply the existing immutable MOD-06 visibility environment.', request)
+        requirement = request.requirement
+        has_pin = request.exact_version is not None or type(request.expression) is AuthoringVersionExpression
+        if requirement.version_requirement is ReferenceVersionRequirement.IDENTITY_ONLY and has_pin:
+            return _reference_failure(SemanticReferenceFailure.UNSUPPORTED_REFERENCE_FORM, 'An authored/requested exact pin cannot be represented by an identity-only requirement.', request)
+        if requirement.version_requirement is ReferenceVersionRequirement.EXACT_VERSION and not has_pin:
+            return _reference_failure(SemanticReferenceFailure.REQUIRED_VERSION_MISSING, 'Exact reference requirement needs an explicit request or authored version.', request)
+        named = self.namespace_resolver.resolve(NamespaceResolutionRequest(request.expression, request.context, requirement.expected_kind, request.exact_version, request.path), environment)
+        if not named.is_success:
+            diagnostics = tuple(SemanticReferenceDiagnostic(_NAMESPACE_REFERENCE_CODES[d.code], d.message, request, namespace_diagnostic=d, path=d.path) for d in named.diagnostics)
+            return SemanticReferenceResolutionResult(None, diagnostics)
+        target = named.target
+        matched_names = frozenset(target.qualified_names)
+        items = tuple(item for item in evidence_index.get(target.reference.element_id, ()) if item.symbol.context == target.context and item.symbol.kind == requirement.expected_kind and item.symbol.qualified_name in matched_names and (type(target.reference) is ElementRef or item.symbol.reference.version == target.reference.version))
+        if not items:
+            return _reference_failure(SemanticReferenceFailure.CONFLICTING_TARGET_EVIDENCE, 'Namespace target has no matching declared/visible evidence under this snapshot.', request, target.reference)
+        if requirement.consumer is ReferenceConsumer.SEMANTIC_TYPE_FIELD and type(target.reference) is ElementVersionRef:
+            return _reference_failure(SemanticReferenceFailure.UNSUPPORTED_REFERENCE_FORM, 'Current TYPE-05 SemanticTypeRef accepts only ElementRef; the verified exact pin cannot be downgraded.', request, target.reference)
+        return SemanticReferenceResolutionResult(ResolvedReferenceBinding(target.reference, target.context, requirement, items, request.path))
+
+    def resolve_many(self, requests: tuple[SemanticReferenceResolutionRequest, ...], environment: NamespaceResolutionEnvironment) -> SemanticReferenceBatchResult:
+        requests = _ordered(requests, SemanticReferenceResolutionRequest)
+        evidence = _reference_evidence_index(environment) if type(environment) is NamespaceResolutionEnvironment else {}
+        return SemanticReferenceBatchResult(tuple(self._resolve(request, environment, evidence) for request in requests))
+
+    def resolve_document(self, document: AuthoringModelDocument, environment: NamespaceResolutionEnvironment, *, retain_source_associations: bool = True) -> ResolvedAuthoringInputResult:
+        """Complete existing MOD-05 input, never a canonical model.
+
+        Environment must explicitly predeclare this document's local coordinates.
+        Primitive fields bypass resolution. Required semantic fields are collected
+        in source order; any failure blocks complete authoring-input readiness.
+        """
+        empty = SemanticReferenceBatchResult(())
+        if type(retain_source_associations) is not bool:
+            raise TypeError('Source association intent must be an explicit boolean.')
+        if type(document) is not AuthoringModelDocument or document.schema_version != AUTHORING_SCHEMA_VERSION:
+            failure = _reference_failure(SemanticReferenceFailure.INVALID_REQUEST, 'Supply one existing supported immutable authoring document.')
+            return ResolvedAuthoringInputResult(None, empty, failure.diagnostics)
+        if type(environment) is not NamespaceResolutionEnvironment:
+            failure = _reference_failure(SemanticReferenceFailure.INVALID_ENVIRONMENT, 'Document reference binding requires an explicit namespace environment.')
+            return ResolvedAuthoringInputResult(None, empty, failure.diagnostics)
+        if document.context != environment.context or Namespace.parse(document.namespace) != environment.current_namespace:
+            failure = _reference_failure(SemanticReferenceFailure.CONTEXT_MISMATCH, 'Document context/current namespace must agree with the explicit environment.', path=AuthoringSchemaPath(()))
+            return ResolvedAuthoringInputResult(None, empty, failure.diagnostics)
+        local_coordinates = {(s.reference, s.qualified_name, s.kind) for s in environment.local_symbols}
+        namespace = Namespace.parse(document.namespace)
+        declarations = []
+        diagnostics: list[SemanticReferenceDiagnostic] = []
+        requests: list[SemanticReferenceResolutionRequest] = []
+        occurrences: list[tuple[int, int, int, FieldId]] = []
+        fields: dict[tuple[int, int, int], ResolvedFieldBinding] = {}
+        for index, declaration in enumerate(document.definitions):
+            identity = SemanticElementId.parse(declaration.id)
+            version = SemanticVersion.parse(declaration.version)
+            name = QualifiedName.create(namespace, declaration.name)
+            reference = ElementVersionRef(identity, version)
+            if (reference, name, SemanticElementKinds.TYPE_DEFINITION) not in local_coordinates:
+                diagnostics.append(SemanticReferenceDiagnostic(SemanticReferenceFailure.INVALID_LOCAL_BINDING, 'Document declaration lacks matching explicit local identity/name/kind/version evidence.', target_reference=reference, path=AuthoringSchemaPath(('definitions', index))))
+            declarations.append((identity, version, name))
+            for facet_index, facet in enumerate(declaration.facets):
+                for field_index, field in enumerate(facet.fields):
+                    key = (index, facet_index, field_index)
+                    field_id = FieldId.parse(field.id)
+                    if type(field.type) is AuthoringPrimitiveExpression:
+                        fields[key] = ResolvedFieldBinding(facet_index, field_index, field_id)
+                        continue
+                    mode = ReferenceVersionRequirement.EXACT_VERSION if type(field.type) is AuthoringVersionExpression else ReferenceVersionRequirement.IDENTITY_ONLY
+                    requirement = SemanticReferenceRequirement(SemanticElementKinds.TYPE_DEFINITION, mode, ReferenceConsumer.SEMANTIC_TYPE_FIELD)
+                    requests.append(SemanticReferenceResolutionRequest(field.type, document.context, requirement, path=AuthoringSchemaPath(('definitions', index, 'facets', facet_index, 'fields', field_index, 'type'))))
+                    occurrences.append((*key, field_id))
+        batch = self.resolve_many(requests, environment)
+        diagnostics.extend(batch.diagnostics)
+        for occurrence, result in zip(occurrences, batch.results):
+            if result.is_success:
+                declaration_index, facet_index, field_index, field_id = occurrence
+                fields[(declaration_index, facet_index, field_index)] = ResolvedFieldBinding(facet_index, field_index, field_id, result.binding.reference)
+        if diagnostics:
+            return ResolvedAuthoringInputResult(None, batch, diagnostics)
+        bindings: list[ResolvedTypeBinding] = []
+        for index, (identity, version, name) in enumerate(declarations):
+            members = tuple(fields[(index, facet_index, field_index)] for facet_index, facet in enumerate(document.definitions[index].facets) for field_index in range(len(facet.fields)))
+            bindings.append(ResolvedTypeBinding(index, identity, name, document.context, version, members))
+        return ResolvedAuthoringInputResult(ResolvedAuthoringModel(document, bindings, retain_source_associations), batch)
+
+
+__all__ += [
+    'ReferenceVersionRequirement', 'ReferenceConsumer', 'SemanticReferenceRequirement',
+    'SemanticReferenceResolutionRequest', 'ReferenceEvidenceOrigin',
+    'ReferenceTargetEvidence', 'ResolvedReferenceBinding', 'SemanticReferenceFailure',
+    'SemanticReferenceDiagnostic', 'SemanticReferenceResolutionResult',
+    'ReferenceBatchStatus', 'SemanticReferenceBatchResult', 'ResolvedAuthoringInputResult',
+    'SemanticReferenceResolver',
 ]
