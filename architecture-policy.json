@@ -319,6 +319,14 @@
       "allowed_zones": [
         "compiler"
       ]
+    },
+    "runtime-artifact-loading": {
+      "zone": "tooling",
+      "path_prefix": "tools/runtime-artifact-loader",
+      "allowed_zones": [
+        "compiler",
+        "runtime"
+      ]
     }
   }
 }

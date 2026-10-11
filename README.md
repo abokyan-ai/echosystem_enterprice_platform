@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler behavior, application runtime, persistence and UI remain future stages.
+A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations and bounded runtime-loading orchestration are implemented; approved runtime producers/decoders, authenticated loading integration, activation, persistence and UI remain future capabilities.
 
 ## Quick start
 
@@ -25,7 +25,7 @@ Build checks syntax, architectural boundaries and importable public entry points
 
 See [architecture](docs/architecture/README.md), [repository structure](docs/architecture/repository-structure.md), [dependency rules](docs/architecture/dependency-rules.md), [module guidelines](docs/architecture/module-guidelines.md) and [contributing](CONTRIBUTING.md).
 
-The repository contains nine physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary, one input loader and one CLI. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
+The repository contains eleven physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary, one input loader, one CLI, one artifact filesystem boundary and one runtime-loading composition boundary. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
 
 There is no runnable web/mobile UI in ARC-01. Reference Mini Sales is reserved for the first executable vertical slice.
 
@@ -232,3 +232,7 @@ Manifest/receipt-driven identity selections, trusted root resolution, server-bou
 ### CMP-10 — IR Inspector
 
 Read-only in-memory Compiled Type IR inspection with exact envelope/type/field/reference/constraint/origin views, bounded selection and optional escaped developer text. Preserves source IR and independent compilation status; no parsing/validation/lowering/artifact/runtime behavior. [Contract](docs/compiler/ir-inspector.md) · [Source/static record](docs/architecture/cmp10-verification.md) · [179 deferred scenarios](test-archive/CMP-10/CMP-10-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Foundation/future payload handlers unavailable, source maps optional. Stop CMP-10.
+
+## RUN-01 — Runtime Artifact Loader
+
+Pure bounded runtime coordinator with explicit trusted authorization, complete digest-verified CMP-07/08/09 source integration, immutable decoder approvals/representations, compatibility/dependency diagnostics and atomic inactive results. New tooling bridge preserves runtime independence; no real format/decoder or authority is invented. No HTTP endpoint or ORM. [Contract and conceptual Mini Sales](docs/runtime/runtime-artifact-loader.md), [ADR-0042](docs/architecture/decisions/ADR-0042-runtime-artifact-loader.md), [static completion report](docs/architecture/run01-verification.md). [188 deferred cases](test-archive/RUN-01/RUN-01-deferred-tests.md), executable tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-01.
