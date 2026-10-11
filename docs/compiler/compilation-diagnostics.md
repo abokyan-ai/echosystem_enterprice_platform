@@ -59,3 +59,7 @@ The complete specification is [137 deferred scenarios](../../test-archive/CMP-02
 ## CMP-03 bounded IR diagnostic association
 
 Existing CompilationDiagnosticAssociation gains optional typed SemanticIRId; authoring details carry only its bounded token projection. Structural/commit/handoff failures use CMP-011..020 with original existing severity and compiler-orchestrator responsibility, without replacing TYPE/MOD diagnostics. `include_ir_identities=False` hides the token by default in existing tooling transport; no payload exposure or new HTTP API. [Envelope contract](semantic-ir-envelope.md). Historical CMP-02 records are preserved; new behavior remains deferred/unverified.
+
+## CMP-07 — Runtime Artifact Manifest
+
+Shared compiled-contracts owns immutable artifact origins/dependencies/descriptors; compiler-core owns bound manifest/V0/assembly using original result status and complete final artifact collection. Original result gains trailing optional request/configuration output origin; legacy unbound result cannot authorize manifest. Typed artifact/manifest diagnostic associations extend compatibly; semantic comparison includes them. No generator/runtime imports/API/ORM/storage/hash/deploy added. Current Type IR-only build stays INCOMPLETE, default runtime-kind approvals empty. [Contract and unexecuted Mini Sales](runtime-artifact-manifest.md). **144** deferred scenarios, tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-07.
