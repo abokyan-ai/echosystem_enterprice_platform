@@ -10,6 +10,7 @@ from model_authoring.public import (
     AuthoringSchemaValidator,
     CanonicalizationResult, CanonicalizationDiagnostic, CanonicalSourceAssociation,
     NamespaceResolutionResult, NamespaceResolutionDiagnostic,
+    SemanticReferenceDiagnostic,
 )
 
 MODULE_NAME = 'model-loader'
@@ -1047,3 +1048,37 @@ def locate_namespace_resolution(result: NamespaceResolutionResult, loaded: Loade
 
 
 __all__ += ['LocatedNamespaceResolutionDiagnostic', 'NamespaceResolutionSourceLocations', 'locate_namespace_resolution', 'locate_namespace_diagnostics']
+
+
+# MOD-07 physical presentation: semantic references never contain coordinates.
+@dataclass(frozen=True, slots=True)
+class LocatedSemanticReferenceDiagnostic:
+    diagnostic: SemanticReferenceDiagnostic
+    location: SourceLocation | None
+    related_locations: tuple[SourceLocation | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostic) is not SemanticReferenceDiagnostic or self.location is not None and type(self.location) is not SourceLocation:
+            raise TypeError('Located reference failures require actual typed domain/location values.')
+        if type(self.related_locations) not in (tuple, list) or any(v is not None and type(v) is not SourceLocation for v in self.related_locations):
+            raise TypeError('Related reference locations require typed optional immutable members.')
+        values = tuple(self.related_locations)
+        if len(values) != len(self.diagnostic.related_paths):
+            raise ValueError('Reference related locations must preserve each delegated source path.')
+        object.__setattr__(self, 'related_locations', values)
+
+
+def locate_semantic_reference_diagnostics(diagnostics: tuple[SemanticReferenceDiagnostic, ...], loaded: LoadedAuthoringDocument) -> tuple[LocatedSemanticReferenceDiagnostic, ...]:
+    """Attach actual MOD-03 primary/related spans to single/batch/readiness errors.
+
+    Pair the exact original loaded document; this is source traceability, not
+    provenance proof. No parsing/loading/resolution or nearest-node inference.
+    """
+    if type(diagnostics) not in (tuple, list) or any(type(d) is not SemanticReferenceDiagnostic for d in diagnostics) or type(loaded) is not LoadedAuthoringDocument:
+        raise TypeError('Reference location attachment requires typed failures and a loaded snapshot.')
+    def location(path: AuthoringSchemaPath | None) -> SourceLocation | None:
+        return None if loaded.locations is None or path is None else loaded.locations.find(SourceNodePath.from_authoring_path(path))
+    return tuple(LocatedSemanticReferenceDiagnostic(d, location(d.path), tuple(location(p) for p in d.related_paths)) for d in diagnostics)
+
+
+__all__ += ['LocatedSemanticReferenceDiagnostic', 'locate_semantic_reference_diagnostics']
