@@ -14,6 +14,7 @@ from model_authoring.public import (
     ModelDiagnosticOrigin, ModelDiagnosticTarget, ModelDiagnosticContext,
     ModelDiagnosticEntry, ModelDiagnosticPayload, associate_model_diagnostic,
     ModelValidationStatus, CompilationReadiness, ModelValidationStageResult,
+    CompilationDiagnosticReport, CompilerPhaseDiagnosticView,
     AuthoringSchemaValidationResult, NamespaceEnvironmentResult,
     NamespaceSymbolSnapshotResult, SemanticReferenceResolutionResult,
     SemanticReferenceBatchResult, ResolvedAuthoringInputResult,
@@ -1137,6 +1138,7 @@ class ModelDiagnosticPhase(str, Enum):
     CANONICALIZATION = 'canonicalization'
     TYPE_VALIDATION = 'type-validation'
     MODEL_VALIDATION = 'model-validation'
+    COMPILATION = 'compilation'
 
 
 @dataclass(frozen=True, slots=True)
@@ -1262,6 +1264,7 @@ class ModelDiagnosticOperation:
     status: ModelDiagnosticProcessingStatus
     entries: tuple[LocatedModelDiagnosticEntry, ...] = ()
     validation_result: ModelValidationResult | None = None
+    compilation_report: CompilationDiagnosticReport | None = None
 
     def __post_init__(self) -> None:
         if type(self.phase) is not ModelDiagnosticPhase or type(self.status) is not ModelDiagnosticProcessingStatus:
@@ -1271,6 +1274,11 @@ class ModelDiagnosticOperation:
         object.__setattr__(self, 'entries', tuple(self.entries))
         if (self.phase is ModelDiagnosticPhase.MODEL_VALIDATION) != (self.validation_result is not None):
             raise ValueError('Only actual MOD-08 outcomes supply validation status/readiness.')
+        if (self.phase is ModelDiagnosticPhase.COMPILATION) != (self.compilation_report is not None):
+            raise ValueError('Only actual compiler outcomes supply compilation status/phase results.')
+        if self.compilation_report is not None:
+            if type(self.compilation_report) is not CompilationDiagnosticReport or tuple(e.entry for e in self.entries) != self.compilation_report.entries or self.status.value != self.compilation_report.status:
+                raise ValueError('Compiler operation must preserve its original outcome/diagnostic entry sequence.')
         if self.validation_result is not None:
             if type(self.validation_result) is not ModelValidationResult:
                 raise TypeError('Validation outcome must be the original actual MOD-08 result.')
@@ -1311,8 +1319,11 @@ class ModelDiagnosticReport:
             raise TypeError('Report requires immutable explicit operation snapshots.')
         rank = {phase: i for i, phase in enumerate(ModelDiagnosticPhase)}
         operations = tuple(sorted(self.operations, key=lambda o: rank[o.phase]))
-        if sum(o.validation_result is not None for o in operations) > 1:
-            raise ValueError('One report may preserve at most one authoritative canonical validation run; use separate reports for multiple models/runs.')
+        validations = tuple(o.validation_result for o in operations if o.validation_result is not None) + tuple(o.compilation_report.validation_evidence for o in operations if o.compilation_report is not None and o.compilation_report.validation_evidence is not None)
+        if validations and any(v is not validations[0] for v in validations):
+            raise ValueError('One report preserves one authoritative validation run; compiler and validation operations must share the actual evidence object.')
+        if sum(o.compilation_report is not None for o in operations) > 1:
+            raise ValueError('Use separate reports for multiple compilation runs.')
         object.__setattr__(self, 'operations', operations)
 
     @property
@@ -1321,7 +1332,20 @@ class ModelDiagnosticReport:
 
     @property
     def validation_result(self) -> ModelValidationResult | None:
-        return next((o.validation_result for o in self.operations if o.validation_result is not None), None)
+        direct = next((o.validation_result for o in self.operations if o.validation_result is not None), None)
+        return direct if direct is not None else None if self.compilation_report is None else self.compilation_report.validation_evidence
+
+    @property
+    def compilation_report(self) -> CompilationDiagnosticReport | None:
+        return next((o.compilation_report for o in self.operations if o.compilation_report is not None), None)
+
+    @property
+    def compilation_status(self) -> str | None:
+        return None if self.compilation_report is None else self.compilation_report.status
+
+    @property
+    def compilation_phase_outcomes(self) -> tuple[CompilerPhaseDiagnosticView, ...]:
+        return () if self.compilation_report is None else self.compilation_report.phase_outcomes
 
     @property
     def validation_status(self) -> ModelValidationStatus | None:
@@ -1385,7 +1409,7 @@ class ModelDiagnosticReport:
         return MappingProxyType({severity: tuple(entries) for severity, entries in groups.items() if entries})
 
 
-ModelDiagnosticInput = ModelLoadResult | ModelLoadBatchResult | AuthoringSchemaValidationResult | NamespaceResolutionResult | NamespaceEnvironmentResult | NamespaceSymbolSnapshotResult | SemanticReferenceResolutionResult | SemanticReferenceBatchResult | ResolvedAuthoringInputResult | CanonicalModelConstructionResult | CanonicalizationResult | TypeValidationResult | ModelValidationResult
+ModelDiagnosticInput = CompilationDiagnosticReport | ModelLoadResult | ModelLoadBatchResult | AuthoringSchemaValidationResult | NamespaceResolutionResult | NamespaceEnvironmentResult | NamespaceSymbolSnapshotResult | SemanticReferenceResolutionResult | SemanticReferenceBatchResult | ResolvedAuthoringInputResult | CanonicalModelConstructionResult | CanonicalizationResult | TypeValidationResult | ModelValidationResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -1396,6 +1420,10 @@ class ModelDiagnosticReporter:
         operations = []
         for result in results:
             original_validation = None
+            if type(result) is CompilationDiagnosticReport:
+                entries = tuple(enrich_model_diagnostic(e, context) for e in result.entries)
+                operations.append(ModelDiagnosticOperation(ModelDiagnosticPhase.COMPILATION, ModelDiagnosticProcessingStatus(result.status), entries, compilation_report=result))
+                continue
             if type(result) in (ModelLoadResult, ModelLoadBatchResult):
                 phase = ModelDiagnosticPhase.LOADING
                 if type(result) is ModelLoadResult:
@@ -1466,6 +1494,10 @@ def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_me
             item['related_input_index'] = entry.entry.related_input_index
         else:
             item['cause_codes'] = list(entry.entry.cause_codes)
+            if entry.origin is ModelDiagnosticOrigin.COMPILER:
+                item['compilation_phase'] = d.phase_id
+                if d.cause_code is not None:
+                    item['cause_codes'].append(d.cause_code)
         if include_messages:
             item['message'] = d.message
         if include_semantic_targets:
@@ -1484,6 +1516,9 @@ def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_me
     return {'processing_status': report.processing_status.value,
             'validation_status': None if report.validation_status is None else report.validation_status.value,
             'compilation_readiness': None if report.compilation_readiness is None else report.compilation_readiness.value,
+            'compilation_status': report.compilation_status,
+            'compilation_target': None if report.compilation_report is None or report.compilation_report.target is None else report.compilation_report.target,
+            'compilation_phase_outcomes': [{'phase_id': o.phase_id, 'status': o.status, **({'reason': o.reason} if include_messages else {})} for o in report.compilation_phase_outcomes],
             'operations': [{'phase': o.phase.value, 'status': o.status.value} for o in report.operations],
             'stage_outcomes': [{'stage_id': s.stage_id, 'status': s.status.value, **({'reason': s.reason} if include_messages else {})} for s in report.stage_outcomes],
             'entries': entries, 'summary': {'total': summary.total, 'errors': summary.errors, 'warnings': summary.warnings, 'info': summary.info}}

@@ -71,3 +71,7 @@ located_reports = locate_model_validation(result, loaded)
 This snippet is production usage documentation, not an executed test or runner. Expected valid complete processing is VALID/READY. String precision and fractional integer bounds use actual TYPE-06 diagnostics, not new rules. Unknown semantic target yields TYPE-VAL-REF-001 and INVALID/NOT_READY with a functioning lookup; missing lookup yields INCOMPLETE/NOT_READY. Self/cycles are not rejected solely as cycles.
 
 See [ADR-0030](../architecture/decisions/ADR-0030-validation-orchestration.md), [static record](../architecture/mod08-verification.md) and [deferred archive](../../test-archive/MOD-08/MOD-08-deferred-tests.md). Stop after MOD-08.
+
+### CMP-01 compatibility addition — 2026-10-11
+
+ModelValidationResult now optionally retains validated_model, populated by the existing pipeline with the exact canonical request.model object. Earlier constructors/statuses remain compatible, but unbound legacy results cannot satisfy compiler admission. Compiler entry requires the same actual model object and does not infer equivalence from context/membership/content or rerun validation. This in-process association is not a cross-process fingerprint or tamper-proof certificate. See [compiler foundation](../compiler/compiler-foundation.md).
