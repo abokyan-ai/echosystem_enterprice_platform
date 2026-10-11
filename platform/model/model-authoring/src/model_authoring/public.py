@@ -1,16 +1,17 @@
-"""MOD-01 schema, MOD-05 canonicalization and MOD-06/07 scoped resolution.
+"""MOD-01 schema, MOD-05 canonicalization and MOD-06/07 resolution and MOD-08 validation.
 
 Input is a decoded JSON-compatible abstract tree, never JSON/YAML source text.
 Schema projection returns authoring snapshots; canonicalization is a separate
 operation requiring typed resolution bindings. Namespace resolution is a
 separate explicit-environment operation; reference requirements and complete
-binding readiness are another boundary. No registry mutation, compiler,
+binding readiness are another boundary. Validation delegates to existing validators
+without executing those transformations. No registry mutation, compiler,
 runtime or parser dependency.
 """
 from dataclasses import dataclass as _dataclass, field as _dataclass_field
 from enum import Enum as _Enum
 from types import MappingProxyType as _MappingProxyType
-from typing import Mapping as _Mapping
+from typing import Mapping as _Mapping, Protocol as _Protocol
 from semantic_kernel.public import (
     SemanticElementId, SemanticElementIdError, SemanticContextRef,
     SemanticContextRefError, Namespace, NamespaceError, QualifiedName,
@@ -27,7 +28,8 @@ from model_core.public import (
     DataFacet, DataFacetError, PrimitiveTypeRef, SemanticTypeRef, TypeRefError,
     CanonicalModel, CanonicalDefinition, CanonicalModelFactory, CanonicalConstructionDiagnostic,
     create_type_data_definition,
-    TypeLookup, TypeRegistryAmbiguityError,
+    TypeLookup, TypeRegistryAmbiguityError, TypeValidator, TypeValidationContext,
+    TypeValidationDiagnostic,
 )
 
 MODULE_NAME = 'model-authoring'
@@ -1700,4 +1702,358 @@ __all__ += [
     'SemanticReferenceDiagnostic', 'SemanticReferenceResolutionResult',
     'ReferenceBatchStatus', 'SemanticReferenceBatchResult', 'ResolvedAuthoringInputResult',
     'SemanticReferenceResolver',
+]
+
+
+# MOD-08: orchestration only. Original validator diagnostics remain unchanged.
+class ModelValidationStatus(_Enum):
+    VALID = 'valid'
+    INVALID = 'invalid'
+    INCOMPLETE = 'incomplete'
+
+
+class CompilationReadiness(_Enum):
+    READY = 'ready'
+    NOT_READY = 'not-ready'
+
+
+class ValidationStageStatus(_Enum):
+    COMPLETED = 'completed'
+    BLOCKED = 'blocked'
+    INCOMPLETE = 'incomplete'
+    SKIPPED = 'skipped'
+
+
+class ValidationWarningPolicy(_Enum):
+    ALLOW = 'allow'
+    BLOCK = 'block'
+
+
+class ModelValidationFailure(_Enum):
+    CONTEXT_MISMATCH = 'MOD-VALIDATION-001'
+    LOOKUP_UNAVAILABLE = 'MOD-VALIDATION-002'
+    LOOKUP_AMBIGUOUS = 'MOD-VALIDATION-003'
+    LOOKUP_SNAPSHOT_MISMATCH = 'MOD-VALIDATION-004'
+    LOOKUP_CONTEXT_MISMATCH = 'MOD-VALIDATION-005'
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationDiagnostic:
+    """Only orchestration failures, pending SK-11; TYPE-06 is never translated."""
+    code: ModelValidationFailure
+    message: str
+    reference: ElementRef | ElementVersionRef | None = None
+    cause_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not ModelValidationFailure or type(self.message) is not str or not self.message:
+            raise TypeError('Pipeline failures require a supported orchestration code and message.')
+        if self.reference is not None:
+            _resolution_reference(self.reference)
+        if self.cause_code is not None and type(self.cause_code) is not str:
+            raise TypeError('Delegated failure code must be text.')
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return TypeValidationSeverity.WARNING if self.code in (ModelValidationFailure.LOOKUP_UNAVAILABLE, ModelValidationFailure.LOOKUP_AMBIGUOUS) else TypeValidationSeverity.ERROR
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationContext:
+    scope: SemanticContextRef
+    type_lookup: TypeLookup | None
+    warning_policy: ValidationWarningPolicy = ValidationWarningPolicy.ALLOW
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not SemanticContextRef or type(self.scope.context_id) is not SemanticElementId:
+            raise TypeError('Validation scope requires an explicit canonical semantic context.')
+        if self.type_lookup is not None and not callable(getattr(self.type_lookup, 'find', None)):
+            raise TypeError('Validation lookup must implement the existing read-only TypeLookup port.')
+        if type(self.warning_policy) is not ValidationWarningPolicy:
+            raise TypeError('Warning readiness policy must be explicit and typed.')
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationRequest:
+    model: CanonicalModel
+    context: ModelValidationContext
+    source_associations: tuple[CanonicalSourceAssociation, ...] = ()
+    _source_paths: _Mapping[CanonicalSourceTarget, AuthoringSchemaPath] = _dataclass_field(init=False, repr=False, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        if type(self.model) is not CanonicalModel or type(self.context) is not ModelValidationContext:
+            raise TypeError('Canonical validation requires MOD-04 model and explicit validation context.')
+        associations = _ordered(self.source_associations, CanonicalSourceAssociation)
+        paths = {}
+        owned_fields = {ElementVersionRef(d.type_definition.id, d.type_definition.version): frozenset(f.id for f in d.data.fields) if d.data is not None else frozenset() for d in self.model.definitions}
+        for association in associations:
+            member = self.model.find(association.target.definition)
+            if member is None or association.target.field_id is not None and association.target.field_id not in owned_fields[association.target.definition]:
+                raise ValueError('Source association must identify an actual exact model member/owned field.')
+            if association.target in paths:
+                raise ValueError('Each semantic source target must have one explicit association.')
+            paths[association.target] = association.path
+        object.__setattr__(self, 'source_associations', associations)
+        object.__setattr__(self, '_source_paths', _MappingProxyType(paths))
+
+    def source_path(self, definition: ElementVersionRef | None, field_id: FieldId | None = None) -> AuthoringSchemaPath | None:
+        if definition is None:
+            return None
+        path = self._source_paths.get(CanonicalSourceTarget(definition, field_id))
+        return path if path is not None else self._source_paths.get(CanonicalSourceTarget(definition))
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationReport:
+    """Provenance envelope; retain the whole original diagnostic, not a new code."""
+    stage_id: str
+    diagnostic: TypeValidationDiagnostic | ModelValidationDiagnostic
+    definition: ElementVersionRef | None = None
+    source_path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        _validation_stage_id(self.stage_id)
+        if type(self.diagnostic) not in (TypeValidationDiagnostic, ModelValidationDiagnostic):
+            raise TypeError('Reports retain actual validator or narrow orchestration diagnostics.')
+        if self.definition is not None and type(self.definition) is not ElementVersionRef:
+            raise TypeError('Diagnostic owner requires an exact member reference.')
+        if self.source_path is not None and type(self.source_path) is not AuthoringSchemaPath:
+            raise TypeError('Source report coordinate must be an actual supplied association path.')
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return self.diagnostic.severity
+
+
+def _validation_stage_id(value: str) -> None:
+    if type(value) is not str or not value.startswith('MOD-STAGE-') or not value[10:] or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-' for c in value[10:]):
+        raise ValueError('Validation stages require stable MOD-STAGE identifiers.')
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationStageResult:
+    stage_id: str
+    status: ValidationStageStatus
+    diagnostics: tuple[ModelValidationReport, ...] = ()
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _validation_stage_id(self.stage_id)
+        if type(self.status) is not ValidationStageStatus:
+            raise TypeError('Stage status must be explicit.')
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, ModelValidationReport))
+        if any(d.stage_id != self.stage_id for d in self.diagnostics):
+            raise ValueError('Stage results cannot relabel another stage diagnostic.')
+        if self.status is not ValidationStageStatus.COMPLETED and (type(self.reason) is not str or not self.reason):
+            raise ValueError('Blocked/incomplete/skipped stages require an explicit reason.')
+        if self.status is ValidationStageStatus.SKIPPED and self.diagnostics:
+            raise ValueError('Skipped stages cannot claim executed validator diagnostics.')
+        if self.reason is not None and (type(self.reason) is not str or not self.reason):
+            raise TypeError('Stage reason must be nonempty text when supplied.')
+
+
+class ModelValidationStage(_Protocol):
+    @property
+    def id(self) -> str:
+        ...
+
+    def validate(self, request: ModelValidationRequest) -> ModelValidationStageResult:
+        ...
+
+
+@_dataclass(frozen=True, slots=True)
+class CanonicalIntegrityValidationStage:
+    id: str = _dataclass_field(default='MOD-STAGE-CANONICAL-INTEGRITY', init=False)
+
+    def validate(self, request: ModelValidationRequest) -> ModelValidationStageResult:
+        if type(request) is not ModelValidationRequest:
+            raise TypeError('Integrity stage requires the actual canonical validation request.')
+        # MOD-04 already proves immutable membership/kind/exact/scope invariants.
+        if request.model.scope != request.context.scope:
+            diagnostic = ModelValidationDiagnostic(ModelValidationFailure.CONTEXT_MISMATCH, 'Explicit validation scope differs from the canonical model scope.')
+            return ModelValidationStageResult(self.id, ValidationStageStatus.BLOCKED, (ModelValidationReport(self.id, diagnostic),), 'Invalid stage scope prevents safe semantic validation.')
+        return ModelValidationStageResult(self.id, ValidationStageStatus.COMPLETED)
+
+
+@_dataclass(frozen=True, slots=True)
+class _ValidationLookupTarget:
+    id: SemanticElementId
+    qualified_name: QualifiedName
+    context: SemanticContextRef
+    kind: SemanticElementKind
+    version: SemanticVersion
+
+
+@_dataclass(frozen=True, slots=True)
+class _ValidationLookupSnapshot:
+    targets: _Mapping[SemanticElementId, _ValidationLookupTarget | None]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'targets', _MappingProxyType(dict(self.targets)))
+
+    def find(self, reference: ElementRef) -> _ValidationLookupTarget | None:
+        if type(reference) is not ElementRef:
+            raise TypeError('Validation snapshot accepts actual identity-only TypeLookup references.')
+        if reference.element_id not in self.targets:
+            raise ValueError('Validator requested an identity outside the finite declared validation snapshot.')
+        return self.targets[reference.element_id]
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeSemanticValidationStage:
+    """TYPE-06 full validation includes approved references, exactly once/member."""
+    validator: TypeValidator = _dataclass_field(default_factory=TypeValidator)
+    id: str = _dataclass_field(default='MOD-STAGE-TYPE-SEMANTIC', init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.validator) is not TypeValidator:
+            raise TypeError('Type semantic stage requires the existing full TYPE-06 validator.')
+
+    def validate(self, request: ModelValidationRequest) -> ModelValidationStageResult:
+        if type(request) is not ModelValidationRequest:
+            raise TypeError('Semantic stage requires the actual canonical validation request.')
+        if request.model.scope != request.context.scope:
+            d = ModelValidationDiagnostic(ModelValidationFailure.CONTEXT_MISMATCH, 'Canonical and validation scopes disagree; semantic prerequisites are invalid.')
+            return ModelValidationStageResult(self.id, ValidationStageStatus.BLOCKED, (ModelValidationReport(self.id, d),), 'Explicit scope must match before lookup or TYPE-06 validation.')
+        lookup = request.context.type_lookup
+        if lookup is None:
+            d = ModelValidationDiagnostic(ModelValidationFailure.LOOKUP_UNAVAILABLE, 'Required stable TypeLookup is unavailable; missing infrastructure does not establish missing targets.')
+            return ModelValidationStageResult(self.id, ValidationStageStatus.INCOMPLETE, (ModelValidationReport(self.id, d),), 'TYPE-06 requires an explicit lookup even for primitive-only models.')
+        identities = {d.type_definition.id for d in request.model.definitions}
+        for definition in request.model.definitions:
+            if definition.data is not None:
+                identities.update(f.type.target.element_id for f in definition.data.fields if type(f.type) is SemanticTypeRef)
+        targets: dict[SemanticElementId, _ValidationLookupTarget | None] = {}
+        reports = []
+        for identity in sorted(identities, key=lambda i: i.value):
+            reference = ElementRef(identity)
+            try:
+                host = lookup.find(reference)
+            except TypeRegistryAmbiguityError as error:
+                d = ModelValidationDiagnostic(ModelValidationFailure.LOOKUP_AMBIGUOUS, 'Lookup has no explicit version binding; validation never selects latest.', reference, error.code)
+                reports.append(ModelValidationReport(self.id, d))
+                continue
+            if host is None:
+                targets[identity] = None
+                continue
+            values = tuple(getattr(host, name, None) for name in ('id', 'qualified_name', 'context', 'kind', 'version'))
+            expected = (SemanticElementId, QualifiedName, SemanticContextRef, SemanticElementKind, SemanticVersion)
+            if any(type(v) is not t for v, t in zip(values, expected)) or type(values[1].namespace) is not Namespace or type(values[2].context_id) is not SemanticElementId:
+                raise TypeError('TypeLookup violated its typed SemanticElement contract; this is an infrastructure/programming defect.')
+            target = _ValidationLookupTarget(*values)
+            targets[identity] = target
+            if target.id != identity or target.context != request.context.scope:
+                code = ModelValidationFailure.LOOKUP_SNAPSHOT_MISMATCH if target.id != identity else ModelValidationFailure.LOOKUP_CONTEXT_MISMATCH
+                d = ModelValidationDiagnostic(code, 'Lookup target identity/context disagrees with the requested semantic scope.', reference)
+                reports.append(ModelValidationReport(self.id, d))
+        # Compare selected five-value metadata, not absent facet content on TypeLookup.
+        checked = set()
+        for definition in request.model.definitions:
+            owner = definition.type_definition
+            if owner.id in checked or owner.id not in targets:
+                continue
+            checked.add(owner.id)
+            target = targets[owner.id]
+            exact = None if target is None else ElementVersionRef(target.id, target.version)
+            member = None if exact is None else request.model.find(exact)
+            if member is None or target != _ValidationLookupTarget(member.type_definition.id, member.type_definition.qualified_name, member.type_definition.context, member.type_definition.kind, member.type_definition.version):
+                subject = ElementVersionRef(owner.id, owner.version)
+                d = ModelValidationDiagnostic(ModelValidationFailure.LOOKUP_SNAPSHOT_MISMATCH, 'Canonical identity must be explicitly visible at a matching selected version/name/kind/context; no local fallback or implicit selection.', ElementRef(owner.id))
+                reports.append(ModelValidationReport(self.id, d, subject, request.source_path(subject)))
+        if reports:
+            status = ValidationStageStatus.BLOCKED if any(r.severity is TypeValidationSeverity.ERROR for r in reports) else ValidationStageStatus.INCOMPLETE
+            return ModelValidationStageResult(self.id, status, reports, 'Lookup evidence is inconsistent or unavailable; TYPE-06 prerequisites are unsafe.')
+        context = TypeValidationContext(_ValidationLookupSnapshot(targets))
+        for definition in request.model.definitions:
+            owner = definition.type_definition
+            subject = ElementVersionRef(owner.id, owner.version)
+            result = self.validator.validate(definition, context)
+            reports.extend(ModelValidationReport(self.id, d, subject, request.source_path(subject, d.field_id)) for d in result.diagnostics)
+        return ModelValidationStageResult(self.id, ValidationStageStatus.COMPLETED, reports)
+
+
+_MANDATORY_VALIDATION_STAGES = ('MOD-STAGE-CANONICAL-INTEGRITY', 'MOD-STAGE-TYPE-SEMANTIC')
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationResult:
+    stage_outcomes: tuple[ModelValidationStageResult, ...]
+    warning_policy: ValidationWarningPolicy = ValidationWarningPolicy.ALLOW
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'stage_outcomes', _ordered(self.stage_outcomes, ModelValidationStageResult))
+        ids = tuple(s.stage_id for s in self.stage_outcomes)
+        if ids[:2] != _MANDATORY_VALIDATION_STAGES or len(set(ids)) != len(ids):
+            raise ValueError('Results must report every mandatory core stage in order, without duplicates.')
+        if type(self.warning_policy) is not ValidationWarningPolicy:
+            raise TypeError('Result warning policy must be explicit.')
+
+    @property
+    def diagnostics(self) -> tuple[ModelValidationReport, ...]:
+        return tuple(d for stage in self.stage_outcomes for d in stage.diagnostics)
+
+    @property
+    def status(self) -> ModelValidationStatus:
+        if any(d.severity is TypeValidationSeverity.ERROR for d in self.diagnostics):
+            return ModelValidationStatus.INVALID
+        if any(s.status is not ValidationStageStatus.COMPLETED for s in self.stage_outcomes):
+            return ModelValidationStatus.INCOMPLETE
+        if self.warning_policy is ValidationWarningPolicy.BLOCK and any(d.severity is TypeValidationSeverity.WARNING for d in self.diagnostics):
+            return ModelValidationStatus.INVALID
+        return ModelValidationStatus.VALID
+
+    @property
+    def readiness(self) -> CompilationReadiness:
+        return CompilationReadiness.READY if self.status is ModelValidationStatus.VALID else CompilationReadiness.NOT_READY
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelValidationPipeline:
+    type_stage: TypeSemanticValidationStage = _dataclass_field(default_factory=TypeSemanticValidationStage)
+    additional_stages: tuple[ModelValidationStage, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.type_stage) is not TypeSemanticValidationStage:
+            raise TypeError('Pipeline requires its mandatory full type stage.')
+        if type(self.additional_stages) not in (tuple, list):
+            raise TypeError('Extra stages require an explicit finite ordered sequence.')
+        stages = tuple(self.additional_stages)
+        ids = set(_MANDATORY_VALIDATION_STAGES)
+        for stage in stages:
+            _validation_stage_id(getattr(stage, 'id', None))
+            if not callable(getattr(stage, 'validate', None)):
+                raise TypeError('Stage must implement the explicit validate protocol.')
+            if stage.id in ids:
+                raise ValueError('Stage IDs cannot duplicate/replace mandatory stages.')
+            ids.add(stage.id)
+        object.__setattr__(self, 'additional_stages', stages)
+
+    @property
+    def stages(self) -> tuple[ModelValidationStage, ...]:
+        return (CanonicalIntegrityValidationStage(), self.type_stage, *self.additional_stages)
+
+    def validate(self, request: ModelValidationRequest) -> ModelValidationResult:
+        if type(request) is not ModelValidationRequest:
+            raise TypeError('Pipeline consumes only the explicit canonical validation request.')
+        outcomes = []
+        blocker = None
+        for stage in self.stages:
+            if blocker is not None:
+                outcomes.append(ModelValidationStageResult(stage.id, ValidationStageStatus.SKIPPED, reason='Prerequisite stage ' + blocker + ' could not safely complete.'))
+                continue
+            outcome = stage.validate(request)
+            if type(outcome) is not ModelValidationStageResult or outcome.stage_id != stage.id:
+                raise TypeError('Stage implementation violated its declared result contract.')
+            outcomes.append(outcome)
+            if outcome.status is not ValidationStageStatus.COMPLETED:
+                blocker = stage.id
+        return ModelValidationResult(outcomes, request.context.warning_policy)
+
+
+__all__ += [
+    'ModelValidationStatus', 'CompilationReadiness', 'ValidationStageStatus',
+    'ValidationWarningPolicy', 'ModelValidationFailure', 'ModelValidationDiagnostic',
+    'ModelValidationContext', 'ModelValidationRequest', 'ModelValidationReport',
+    'ModelValidationStage', 'ModelValidationStageResult', 'ModelValidationResult',
+    'CanonicalIntegrityValidationStage', 'TypeSemanticValidationStage', 'ModelValidationPipeline',
 ]

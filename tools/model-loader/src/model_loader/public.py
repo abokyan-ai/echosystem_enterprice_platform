@@ -10,7 +10,7 @@ from model_authoring.public import (
     AuthoringSchemaValidator,
     CanonicalizationResult, CanonicalizationDiagnostic, CanonicalSourceAssociation,
     NamespaceResolutionResult, NamespaceResolutionDiagnostic,
-    SemanticReferenceDiagnostic,
+    SemanticReferenceDiagnostic, ModelValidationReport, ModelValidationResult,
 )
 
 MODULE_NAME = 'model-loader'
@@ -1082,3 +1082,31 @@ def locate_semantic_reference_diagnostics(diagnostics: tuple[SemanticReferenceDi
 
 
 __all__ += ['LocatedSemanticReferenceDiagnostic', 'locate_semantic_reference_diagnostics']
+
+
+# MOD-08 physical enrichment stays outside pure semantic validation.
+@dataclass(frozen=True, slots=True)
+class LocatedModelValidationReport:
+    report: ModelValidationReport
+    location: SourceLocation | None
+
+    def __post_init__(self) -> None:
+        if type(self.report) is not ModelValidationReport or self.location is not None and type(self.location) is not SourceLocation:
+            raise TypeError('Located validation reports require original typed reports and optional actual locations.')
+
+
+def locate_model_validation(result: ModelValidationResult, loaded: LoadedAuthoringDocument) -> tuple[LocatedModelValidationReport, ...]:
+    """Attach exact MOD-03 nodes from explicit MOD-05 associations.
+
+    Existing associations only identify definition/field nodes: constraint-level
+    diagnostics retain their typed TYPE-06 path but use that actual broader node.
+    No guessed constraint indexes, synthetic spans or nearest-node inference.
+    Caller must pair the original loaded authoring source, not a different file.
+    """
+    if type(result) is not ModelValidationResult or type(loaded) is not LoadedAuthoringDocument:
+        raise TypeError('Validation enrichment requires original typed validation/loading snapshots.')
+    index = loaded.locations
+    return tuple(LocatedModelValidationReport(report, None if index is None or report.source_path is None else index.find(SourceNodePath.from_authoring_path(report.source_path))) for report in result.diagnostics)
+
+
+__all__ += ['LocatedModelValidationReport', 'locate_model_validation']
