@@ -71,3 +71,7 @@ Existing compiler-core owns immutable diagnostic association/wrapper/reporter; e
 ### CMP-03 intermediate envelope boundary
 
 Existing compiler-core owns explicit identity/schema/closed foundation payload/envelope/input association/factory/handoff and minimal trailing phase state/result extensions. Authoring/tooling only add optional bounded IR diagnostic token presentation through existing inward edges. No new module/profile/dependency/runtime exposure, domain source import, generator or endpoint. [Contract](../compiler/semantic-ir-envelope.md), [ADR-0034](decisions/ADR-0034-semantic-ir-envelope.md), [record](cmp03-verification.md). Original request/phase association is trusted in-process; test execution deferred, stop CMP-03.
+
+### CMP-04 concrete type payload and lowering
+
+Existing compiler-core owns compiled type/field contracts, actual constraint/reference aliases, focused gated lowerer and explicit fixed type phase/representation bindings. Existing envelope discriminated union and handoff extend explicitly; no module/dependency/profile/activation/runtime/source-tooling edge added. [Contract](../compiler/compiled-type-ir.md), [ADR-0035](decisions/ADR-0035-compiled-type-ir.md), [record](cmp04-verification.md). No target generation or API/ORM; deferred verification, stop CMP-04.

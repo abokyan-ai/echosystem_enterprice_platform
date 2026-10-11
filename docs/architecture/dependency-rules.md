@@ -151,3 +151,7 @@ Compiler diagnostic reporter composes through existing compiler-core → model-a
 ### CMP-03 IR ownership
 
 Semantic IR envelope/payload/handoff stay compiler-local using existing Kernel/model/authoring public contracts. Artifacts remain a separate compiled-contracts boundary; runtime does not import IR/compiler/model authoring. Narrow IR identity diagnostic token projection crosses existing compiler → authoring → tooling seams without exposing payload or introducing any new dependency/profile/activation exception. [ADR-0034](decisions/ADR-0034-semantic-ir-envelope.md).
+
+### CMP-04 type lowering
+
+Compiled type IR reuses existing compiler-core → model-core/Kernel/authoring public contracts. No source tooling, registry resolution, Django/DRF, ORM or runtime import added. Type references/constraints remain semantic immutable values; envelope stays compiler-internal. No manifest/profile/activation exception, dynamic payload registry or target generator. [ADR-0035](decisions/ADR-0035-compiled-type-ir.md).
