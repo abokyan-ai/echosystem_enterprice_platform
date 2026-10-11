@@ -139,3 +139,7 @@ The active analyzer is Python AST plus manifest policy. There is **no TypeScript
 ## ARC-03 integration
 
 Discovery and evaluation now live separately behind ArchitectureModel. The ARC-02 API remains compatible; required fitness invariants also run in build/doctor/check commands. A 30-rule registry adds severity, structured results, transitive paths, reports and governed temporary exceptions. Existing ARCH-DEP IDs retain their meanings; precise new rules use ARCH-FIT-DEP IDs.
+
+### CMP-01 observed compiler boundary
+
+Compiler-core now consumes semantic-kernel, model-core, compiled-contracts and the explicitly added model-authoring public API edge for existing validation evidence/diagnostic associations. This respects compiler -> model/contract zone direction. Compiled-contracts consumes only Kernel artifact coordinates. Model-loader remains restricted to model-authoring under its designated model-source-loading profile; compilation reports arrive through an explicit presentation contract, without importing compiler implementation. Runtime still consumes only Kernel/compiled-contracts/runtime contracts. No policy/profile relaxation, exception/suppression or activation dependency change. See [compiler foundation](../compiler/compiler-foundation.md).

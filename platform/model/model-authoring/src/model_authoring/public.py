@@ -8,7 +8,7 @@ binding readiness are another boundary. Validation delegates to existing validat
 without executing those transformations. No registry mutation, compiler,
 runtime or parser dependency.
 """
-from dataclasses import dataclass as _dataclass, field as _dataclass_field
+from dataclasses import dataclass as _dataclass, field as _dataclass_field, is_dataclass as _is_dataclass
 from enum import Enum as _Enum
 from types import MappingProxyType as _MappingProxyType
 from typing import Mapping as _Mapping, Protocol as _Protocol
@@ -1979,8 +1979,11 @@ _MANDATORY_VALIDATION_STAGES = ('MOD-STAGE-CANONICAL-INTEGRITY', 'MOD-STAGE-TYPE
 class ModelValidationResult:
     stage_outcomes: tuple[ModelValidationStageResult, ...]
     warning_policy: ValidationWarningPolicy = ValidationWarningPolicy.ALLOW
+    validated_model: CanonicalModel | None = _dataclass_field(default=None, repr=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
+        if self.validated_model is not None and type(self.validated_model) is not CanonicalModel:
+            raise TypeError('Validation binding must retain the exact canonical input object.')
         object.__setattr__(self, 'stage_outcomes', _ordered(self.stage_outcomes, ModelValidationStageResult))
         ids = tuple(s.stage_id for s in self.stage_outcomes)
         if ids[:2] != _MANDATORY_VALIDATION_STAGES or len(set(ids)) != len(ids):
@@ -2047,7 +2050,7 @@ class ModelValidationPipeline:
             outcomes.append(outcome)
             if outcome.status is not ValidationStageStatus.COMPLETED:
                 blocker = stage.id
-        return ModelValidationResult(outcomes, request.context.warning_policy)
+        return ModelValidationResult(outcomes, request.context.warning_policy, request.model)
 
 
 __all__ += [
@@ -2069,6 +2072,7 @@ class ModelDiagnosticOrigin(_Enum):
     CANONICAL_CONSTRUCTION = 'canonical-construction'
     TYPE_VALIDATOR = 'type-validator'
     MODEL_VALIDATION_PIPELINE = 'model-validation-pipeline'
+    COMPILER = 'compiler'
 
 
 class ModelDiagnosticTargetKind(_Enum):
@@ -2097,7 +2101,33 @@ class ModelDiagnosticTarget:
         return str(self.reference.version) if type(self.reference) is ElementVersionRef else None
 
 
-ModelDiagnosticPayload = AuthoringSchemaDiagnostic | CanonicalConstructionDiagnostic | CanonicalizationDiagnostic | NamespaceResolutionDiagnostic | SemanticReferenceDiagnostic | TypeValidationDiagnostic | ModelValidationDiagnostic
+class ModelDiagnosticExtension(_Protocol):
+    """Explicit compiler diagnostic presentation seam; no producer discovery.
+
+    Implementations are immutable pure values. This is not full missing SK-11.
+    """
+    @property
+    def code(self) -> str | _Enum:
+        ...
+
+    @property
+    def message(self) -> str:
+        ...
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        ...
+
+    @property
+    def phase_id(self) -> str | None:
+        ...
+
+    @property
+    def cause_code(self) -> str | None:
+        ...
+
+
+ModelDiagnosticPayload = ModelDiagnosticExtension | AuthoringSchemaDiagnostic | CanonicalConstructionDiagnostic | CanonicalizationDiagnostic | NamespaceResolutionDiagnostic | SemanticReferenceDiagnostic | TypeValidationDiagnostic | ModelValidationDiagnostic
 _DIAGNOSTIC_ORIGINS = _MappingProxyType({
     AuthoringSchemaDiagnostic: ModelDiagnosticOrigin.AUTHORING_SCHEMA,
     CanonicalConstructionDiagnostic: ModelDiagnosticOrigin.CANONICAL_CONSTRUCTION,
@@ -2144,10 +2174,21 @@ class ModelDiagnosticEntry:
     source_path: AuthoringSchemaPath | None = None
     related_paths: tuple[AuthoringSchemaPath, ...] = ()
     validation_report: ModelValidationReport | None = None
+    extension_origin: ModelDiagnosticOrigin | None = None
 
     def __post_init__(self) -> None:
         if type(self.diagnostic) not in _DIAGNOSTIC_ORIGINS:
-            raise TypeError('Entry must retain an actual supported diagnostic contract, not an exception or raw dictionary.')
+            if self.extension_origin is not ModelDiagnosticOrigin.COMPILER:
+                raise TypeError('Unknown diagnostic requires the explicit compiler presentation extension, not origin guessing.')
+            d = self.diagnostic
+            if not _is_dataclass(d) or isinstance(d, type) or not d.__dataclass_params__.frozen:
+                raise TypeError('Compiler diagnostic extension must be an immutable value implementation.')
+            if not isinstance(d.code, (str, _Enum)) or type(d.message) is not str or not d.message or type(d.severity) is not TypeValidationSeverity:
+                raise TypeError('Compiler presentation must expose the existing typed diagnostic scalar contract.')
+            if d.phase_id is not None and (type(d.phase_id) is not str or not d.phase_id.startswith('CMP-PHASE-')) or d.cause_code is not None and (type(d.cause_code) is not str or not d.cause_code):
+                raise TypeError('Compiler presentation must retain explicit optional phase/cause identifiers.')
+        elif self.extension_origin is not None:
+            raise ValueError('Existing diagnostic origins cannot be relabeled by an extension.')
         if self.target is not None and type(self.target) is not ModelDiagnosticTarget:
             raise TypeError('Semantic target association must be typed or absent.')
         object.__setattr__(self, 'related_targets', _ordered(self.related_targets, ModelDiagnosticTarget))
@@ -2158,7 +2199,7 @@ class ModelDiagnosticEntry:
 
     @property
     def origin(self) -> ModelDiagnosticOrigin:
-        return _DIAGNOSTIC_ORIGINS[type(self.diagnostic)]
+        return self.extension_origin if self.extension_origin is not None else _DIAGNOSTIC_ORIGINS[type(self.diagnostic)]
 
     @property
     def stage_id(self) -> str | None:
@@ -2238,4 +2279,43 @@ def associate_model_diagnostic(diagnostic: ModelDiagnosticPayload | ModelValidat
 
 __all__ += ['ModelDiagnosticOrigin', 'ModelDiagnosticTargetKind', 'ModelDiagnosticTarget',
             'ModelDiagnosticPayload', 'ModelDiagnosticContext', 'ModelDiagnosticEntry',
-            'associate_model_diagnostic']
+            'associate_model_diagnostic', 'ModelDiagnosticExtension']
+
+
+# CMP-01 narrow diagnostic presentation projection; no compiler implementation edge.
+@_dataclass(frozen=True, slots=True)
+class CompilerPhaseDiagnosticView:
+    phase_id: str
+    status: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.phase_id) is not str or not self.phase_id.startswith('CMP-PHASE-') or not self.phase_id[10:]:
+            raise TypeError('Compiler phase presentation requires the producer phase identifier.')
+        if self.status not in ('completed', 'failed', 'incomplete', 'skipped') or type(self.status) is not str:
+            raise TypeError('Compiler phase presentation preserves an actual supported status scalar.')
+        if self.reason is not None and (type(self.reason) is not str or not self.reason):
+            raise TypeError('Optional producer reason must be nonempty text.')
+
+
+@_dataclass(frozen=True, slots=True)
+class CompilationDiagnosticReport:
+    """Immutable explicit MOD-09 projection, not a compiler output/artifact model."""
+    status: str
+    target: str | None
+    entries: tuple[ModelDiagnosticEntry, ...]
+    phase_outcomes: tuple[CompilerPhaseDiagnosticView, ...]
+    validation_evidence: ModelValidationResult | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not str or self.status not in ('succeeded', 'failed', 'incomplete'):
+            raise TypeError('Compiler presentation preserves the original status scalar.')
+        if self.target is not None and (type(self.target) is not str or not self.target):
+            raise TypeError('Optional target presentation must be an explicit producer token.')
+        object.__setattr__(self, 'entries', _ordered(self.entries, ModelDiagnosticEntry))
+        object.__setattr__(self, 'phase_outcomes', _ordered(self.phase_outcomes, CompilerPhaseDiagnosticView))
+        if self.validation_evidence is not None and type(self.validation_evidence) is not ModelValidationResult:
+            raise TypeError('Compiler presentation retains original MOD-08 evidence.')
+
+
+__all__ += ['CompilerPhaseDiagnosticView', 'CompilationDiagnosticReport']

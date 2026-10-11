@@ -87,7 +87,8 @@
       "allowed_dependencies": [
         "semantic-kernel",
         "model-core",
-        "compiled-contracts"
+        "compiled-contracts",
+        "model-authoring"
       ],
       "zone": "compiler",
       "owner": "compiler maintainers",
@@ -99,7 +100,8 @@
       "dependency_categories": {
         "semantic-kernel": "api",
         "model-core": "api",
-        "compiled-contracts": "api"
+        "compiled-contracts": "api",
+        "model-authoring": "api"
       },
       "activation_dependencies": [
         "semantic-kernel",
