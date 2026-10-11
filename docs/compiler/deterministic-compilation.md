@@ -61,3 +61,7 @@ Explicit future Customer@1.1.0 preserves both versions with its own ir-sales.cus
 ## Deferred verification and stop
 
 [ADR-0037](../architecture/decisions/ADR-0037-deterministic-compilation.md), [implementation/static record](../architecture/cmp06-verification.md), [sole detailed deferred specification](../../test-archive/CMP-06/CMP-06-deferred-tests.md). Static inspection/syntax/build are separate from semantic verification. Tests created/executed: 0, NOT_RUN — DEFERRED. Stop CMP-06; no CMP-07.
+
+## CMP-07 — Runtime Artifact Manifest
+
+Shared compiled-contracts owns immutable artifact origins/dependencies/descriptors; compiler-core owns bound manifest/V0/assembly using original result status and complete final artifact collection. Original result gains trailing optional request/configuration output origin; legacy unbound result cannot authorize manifest. Typed artifact/manifest diagnostic associations extend compatibly; semantic comparison includes them. No generator/runtime imports/API/ORM/storage/hash/deploy added. Current Type IR-only build stays INCOMPLETE, default runtime-kind approvals empty. [Contract and unexecuted Mini Sales](runtime-artifact-manifest.md). **144** deferred scenarios, tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-07.

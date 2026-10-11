@@ -1,5 +1,5 @@
 """CMP-01 deterministic compiler foundation; no concrete generators or hosting."""
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace, InitVar
 from collections import Counter, deque
 from enum import Enum
 from typing import Protocol, Mapping
@@ -17,7 +17,8 @@ from model_authoring.public import (
     CompilationDiagnosticOrigin, CompilationDiagnosticDetails, CompilationArtifactDiagnosticView,
     AuthoringSchemaPath,
 )
-from compiled_contracts.public import CompilationArtifact, CompilationArtifactKey, CompilationArtifactKind
+from compiled_contracts.public import (CompilationArtifact, CompilationArtifactKey, CompilationArtifactKind,
+    RuntimeArtifactDependencyRef, RuntimeArtifactMetadata, RuntimeArtifactDescriptor)
 
 MODULE_NAME = 'compiler-core'
 
@@ -85,6 +86,19 @@ class CompilationFailure(Enum):
     TYPE_IR_INVALID_PAYLOAD = 'CMP-028'
     NONDETERMINISTIC_CONFIGURATION = 'CMP-029'
     CONFIGURATION_CHANGED = 'CMP-030'
+    MANIFEST_COMPILATION_NOT_SUCCESSFUL = 'CMP-031'
+    MANIFEST_UNSUPPORTED_SCHEMA = 'CMP-032'
+    MANIFEST_INVALID_IDENTITY = 'CMP-033'
+    MANIFEST_CONTEXT_MISMATCH = 'CMP-034'
+    MANIFEST_TARGET_MISMATCH = 'CMP-035'
+    MANIFEST_SNAPSHOT_MISMATCH = 'CMP-036'
+    MANIFEST_UNSUPPORTED_KIND = 'CMP-037'
+    MANIFEST_OUTPUT_UNBOUND = 'CMP-038'
+    MANIFEST_INCOMPLETE_METADATA = 'CMP-039'
+    MANIFEST_UNKNOWN_DEPENDENCY = 'CMP-040'
+    MANIFEST_DUPLICATE_ARTIFACT = 'CMP-041'
+    MANIFEST_INCOMPLETE_OUTPUT = 'CMP-042'
+    MANIFEST_IDENTITY_COLLISION = 'CMP-043'
 
 
 def _phase_id(value: str) -> None:
@@ -122,12 +136,19 @@ class CompilationDiagnosticAssociation:
     related_paths: tuple[AuthoringSchemaPath, ...] = ()
     semantic_context: SemanticContextRef | None = None
     ir_identity: 'SemanticIRId | None' = None
+    related_artifact_targets: tuple[CompilationArtifactTarget, ...] = ()
+    manifest_identity: 'RuntimeArtifactManifestId | None' = None
 
     def __post_init__(self) -> None:
         if self.artifact_target is not None and type(self.artifact_target) is not CompilationArtifactTarget:
             raise TypeError('Artifact target must be a bounded association.')
         if self.ir_identity is not None and type(self.ir_identity) is not SemanticIRId:
             raise TypeError('IR diagnostic identity is independent of semantic/artifact identity.')
+        if self.manifest_identity is not None and type(self.manifest_identity) is not RuntimeArtifactManifestId:
+            raise TypeError('Manifest diagnostic identity is independent of artifact and semantic identities.')
+        if type(self.related_artifact_targets) not in (tuple, list) or any(type(a) is not CompilationArtifactTarget for a in self.related_artifact_targets):
+            raise TypeError('Related artifact associations require immutable typed artifact targets.')
+        object.__setattr__(self, 'related_artifact_targets', tuple(self.related_artifact_targets))
         CompilationDiagnosticDetails(self.origin, self.phase_id, None if self.artifact_target is None else self.artifact_target.diagnostic_view, self.semantic_context, None if self.ir_identity is None else self.ir_identity.value)
         if self.semantic_target is not None and type(self.semantic_target) is not ModelDiagnosticTarget:
             raise TypeError('Reuse the existing semantic target; fields keep their owned FieldId.')
@@ -375,6 +396,7 @@ class CompilationResult:
     artifacts: CompilationArtifactCollection = field(default_factory=CompilationArtifactCollection)
     validation_evidence: ModelValidationResult | None = None
     diagnostic_context: ModelDiagnosticContext = field(default_factory=ModelDiagnosticContext)
+    output_origin: 'CompilationOutputOrigin | None' = field(default=None, repr=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         if type(self.status) is not CompilationStatus or self.target is not None and type(self.target) is not CompilationTargetId:
@@ -384,6 +406,12 @@ class CompilationResult:
             if type(values) not in (tuple, list) or any(type(v) is not expected for v in values):
                 raise TypeError('Compiler result requires immutable typed outcome sequences.')
             object.__setattr__(self, name, tuple(values))
+        if self.output_origin is not None:
+            if type(self.output_origin) is not CompilationOutputOrigin:
+                raise TypeError('Output origin must retain the actual compilation input/configuration binding.')
+            original = self.output_origin.request
+            if self.target != original.context.target or self.validation_evidence is not original.validation_evidence or self.preparation is not None and (self.preparation.model is not original.canonical_model or self.preparation.context != original.context):
+                raise ValueError('Compilation output origin cannot contradict actual target/input/evidence.')
         if type(self.artifacts) is not CompilationArtifactCollection or type(self.diagnostic_context) is not ModelDiagnosticContext:
             raise TypeError('Compiler result output/report contracts must be typed.')
         if self.validation_evidence is not None and type(self.validation_evidence) is not ModelValidationResult:
@@ -571,7 +599,7 @@ class ModelCompiler:
             diagnostics.append(CompilationDiagnostic(CompilationFailure.INCOMPLETE_BUILD, 'Required target artifact generation/output is unavailable; preparation is not a compiled build.', TypeValidationSeverity.WARNING))
             status = CompilationStatus.INCOMPLETE
         status = status or CompilationStatus.SUCCEEDED
-        return CompilationResult(status, request.context.target, diagnostics, outcomes, state.preparation if status is CompilationStatus.SUCCEEDED else None, state.artifacts if status is CompilationStatus.SUCCEEDED else CompilationArtifactCollection(), evidence, context)
+        return CompilationResult(status, request.context.target, diagnostics, outcomes, state.preparation if status is CompilationStatus.SUCCEEDED else None, state.artifacts if status is CompilationStatus.SUCCEEDED else CompilationArtifactCollection(), evidence, context, CompilationOutputOrigin(request, self))
 
 
 __all__ = ['MODULE_NAME', 'CompilationStatus', 'CompilationPhaseStatus', 'CompilationCapability',
@@ -613,6 +641,20 @@ _LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({
     CompilationFailure.TYPE_IR_INVALID_PAYLOAD: CompilationDiagnosticOrigin.PHASE,
     CompilationFailure.NONDETERMINISTIC_CONFIGURATION: CompilationDiagnosticOrigin.ORCHESTRATOR,
     CompilationFailure.CONFIGURATION_CHANGED: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.MANIFEST_COMPILATION_NOT_SUCCESSFUL: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_UNSUPPORTED_SCHEMA: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_INVALID_IDENTITY: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_CONTEXT_MISMATCH: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_TARGET_MISMATCH: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_SNAPSHOT_MISMATCH: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_UNSUPPORTED_KIND: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_OUTPUT_UNBOUND: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_INCOMPLETE_METADATA: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_UNKNOWN_DEPENDENCY: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_DUPLICATE_ARTIFACT: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_INCOMPLETE_OUTPUT: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.MANIFEST_IDENTITY_COLLISION: CompilationDiagnosticOrigin.RESULT,
+
 })
 
 
@@ -1230,6 +1272,7 @@ def _diagnostic_semantics(diagnostic: CompilationDiagnostic) -> tuple[object, ..
         association.origin, association.phase_id, association.semantic_target,
         association.artifact_target, association.related_targets,
         association.semantic_context, association.ir_identity,
+        association.related_artifact_targets, association.manifest_identity,
     )
     # Message and source paths are presentation, never diagnostic ordering keys.
     return (diagnostic.code, diagnostic.severity, diagnostic.phase_id,
@@ -1308,3 +1351,255 @@ class CompilationResultEquivalence:
 
 
 __all__ += ['CompilationConfigurationError', 'CompilationResultEquivalence']
+
+
+# CMP-07 retains input/configuration provenance without retaining artifact payloads.
+@dataclass(frozen=True, slots=True, eq=False)
+class CompilationOutputOrigin:
+    request: CompilationRequest
+    compiler: ModelCompiler
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not CompilationRequest or type(self.compiler) is not ModelCompiler:
+            raise TypeError('Output origin uses the actual original request and compiler configuration.')
+
+
+class RuntimeArtifactManifestError(ValueError):
+    def __init__(self, diagnostics: tuple[CompilationDiagnostic, ...], status: CompilationStatus = CompilationStatus.FAILED) -> None:
+        if type(diagnostics) not in (tuple, list) or not diagnostics or any(type(d) is not CompilationDiagnostic for d in diagnostics) or type(status) is not CompilationStatus or status not in (CompilationStatus.FAILED, CompilationStatus.INCOMPLETE):
+            raise TypeError('Manifest rejection requires diagnostics and an existing non-success status.')
+        self.diagnostics, self.status = tuple(diagnostics), status
+        super().__init__('Runtime artifact manifest assembly rejected.')
+
+
+def _manifest_diagnostic(code: CompilationFailure, message: str, *, identity: 'RuntimeArtifactManifestId | None' = None, key: CompilationArtifactKey | None = None, kind: CompilationArtifactKind | None = None, target: CompilationTargetId | None = None, reference: ElementVersionRef | None = None, dependency: CompilationArtifactKey | None = None, conflicts: tuple[RuntimeArtifactDescriptor, ...] = (), severity: TypeValidationSeverity = TypeValidationSeverity.ERROR) -> CompilationDiagnostic:
+    artifact = None if key is None and kind is None and target is None else CompilationArtifactTarget(key, kind, target)
+    semantic = None if reference is None else ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, reference)
+    related = (() if dependency is None else (CompilationArtifactTarget(key=dependency, target=target),)) + tuple(CompilationArtifactTarget(key=d.key, kind=d.kind, target=target) for d in conflicts)
+    origins = tuple(ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, r) for d in conflicts for r in d.metadata.semantic_origins)
+    association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.RESULT, semantic_target=semantic, artifact_target=artifact, related_targets=origins, related_artifact_targets=related, manifest_identity=identity)
+    return CompilationDiagnostic(code, message, severity, reference=reference, association=association)
+
+
+def _manifest_reject(code: CompilationFailure, message: str, **associations: object) -> None:
+    raise RuntimeArtifactManifestError((_manifest_diagnostic(code, message, **associations),))
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RuntimeArtifactManifestId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not str or re.fullmatch(r'manifest-[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', self.value) is None or len(self.value) > 160:
+            _manifest_reject(CompilationFailure.MANIFEST_INVALID_IDENTITY, 'Manifest identity requires an explicit independent bounded manifest token.')
+
+
+class RuntimeArtifactManifestSchemaVersion(Enum):
+    V0 = '0'
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeArtifactKindSupport:
+    """Explicit application/compiler-owner approval of a concrete output contract."""
+    kind: CompilationArtifactKind
+    artifact_type: type
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not CompilationArtifactKind or not isinstance(self.artifact_type, type) or not is_dataclass(self.artifact_type) or not self.artifact_type.__dataclass_params__.frozen:
+            _manifest_reject(CompilationFailure.MANIFEST_UNSUPPORTED_KIND, 'Runtime kind approval requires an existing kind and concrete immutable artifact class.')
+        if not {'key', 'kind', 'scope', 'target', 'semantic_dependencies', 'manifest_metadata'} <= {f.name for f in fields(self.artifact_type)}:
+            _manifest_reject(CompilationFailure.MANIFEST_INCOMPLETE_METADATA, 'Approved artifact contract must declare existing artifact metadata and explicit manifest_metadata fields.', kind=self.kind)
+
+
+def _manifest_support(values: tuple[RuntimeArtifactKindSupport, ...]) -> tuple[RuntimeArtifactKindSupport, ...]:
+    if type(values) not in (tuple, list) or any(type(v) is not RuntimeArtifactKindSupport for v in values):
+        _manifest_reject(CompilationFailure.MANIFEST_UNSUPPORTED_KIND, 'Runtime artifact support must be an explicit finite typed approval sequence.')
+    values = tuple(sorted(values, key=lambda v: v.kind.value))
+    if len({v.kind for v in values}) != len(values):
+        _manifest_reject(CompilationFailure.MANIFEST_UNSUPPORTED_KIND, 'Artifact kind approval cannot be ambiguous or repeated.')
+    return values
+
+
+def _runtime_descriptors(result: CompilationResult, request: CompilationRequest, support: tuple[RuntimeArtifactKindSupport, ...]) -> tuple[RuntimeArtifactDescriptor, ...]:
+    allowed = {s.kind: s.artifact_type for s in support}
+    descriptors, diagnostics = [], []
+    for artifact in result.artifacts.artifacts:
+        if artifact.kind not in allowed or type(artifact) is not allowed.get(artifact.kind):
+            diagnostics.append(_manifest_diagnostic(CompilationFailure.MANIFEST_UNSUPPORTED_KIND, 'Actual emitted artifact kind/concrete contract has no explicit runtime-consumable approval.', key=artifact.key, kind=artifact.kind, target=request.context.target))
+            continue
+        metadata = artifact.manifest_metadata
+        if type(metadata) is not RuntimeArtifactMetadata:
+            diagnostics.append(_manifest_diagnostic(CompilationFailure.MANIFEST_INCOMPLETE_METADATA, 'Artifact has no actual closed immutable runtime manifest metadata.', key=artifact.key, kind=artifact.kind))
+            continue
+        invalid = tuple(r for r in metadata.semantic_origins if not request.canonical_model.contains(r))
+        if invalid:
+            diagnostics.extend(_manifest_diagnostic(CompilationFailure.MANIFEST_SNAPSHOT_MISMATCH, 'Artifact semantic origin is outside the exact validated canonical membership.', key=artifact.key, reference=r) for r in invalid)
+            continue
+        descriptors.append(RuntimeArtifactDescriptor(artifact.key, artifact.kind, metadata))
+    if diagnostics:
+        raise RuntimeArtifactManifestError(tuple(diagnostics))
+    return tuple(descriptors)
+
+
+def _manifest_inventory(values: tuple[RuntimeArtifactDescriptor, ...]) -> tuple[RuntimeArtifactDescriptor, ...]:
+    if type(values) not in (tuple, list) or any(type(v) is not RuntimeArtifactDescriptor for v in values):
+        _manifest_reject(CompilationFailure.MANIFEST_INCOMPLETE_METADATA, 'Manifest inventory requires finite actual immutable descriptors, never artifacts or IR.')
+    # Extra keys resolve invalid duplicate diagnostic order only; valid inventory still uses artifact key order.
+    values = tuple(sorted(values, key=lambda v: (v.key.value, v.kind.value, tuple((r.element_id.value, r.version.major, r.version.minor, r.version.patch) for r in v.metadata.semantic_origins), v.metadata.model_wide, tuple(d.key.value for d in v.metadata.dependencies))))
+    keys, diagnostics = set(), []
+    for descriptor in values:
+        if descriptor.key in keys:
+            diagnostics.append(_manifest_diagnostic(CompilationFailure.MANIFEST_DUPLICATE_ARTIFACT, 'Duplicate artifact descriptors are never overwritten or exempted by equality.', key=descriptor.key, kind=descriptor.kind, conflicts=tuple(d for d in values if d.key == descriptor.key)))
+        keys.add(descriptor.key)
+    for descriptor in values:
+        for dependency in descriptor.metadata.dependencies:
+            if dependency.key not in keys:
+                diagnostics.append(_manifest_diagnostic(CompilationFailure.MANIFEST_UNKNOWN_DEPENDENCY, 'Internal dependency target is absent from the complete declared artifact set.', key=descriptor.key, dependency=dependency.key))
+    if diagnostics:
+        raise RuntimeArtifactManifestError(tuple(diagnostics))
+    return values
+
+
+def _manifest_binding(result: CompilationResult, request: CompilationRequest, compiler: ModelCompiler) -> None:
+    if type(result) is not CompilationResult or type(request) is not CompilationRequest or type(compiler) is not ModelCompiler:
+        _manifest_reject(CompilationFailure.INVALID_INPUT, 'Manifest assembly requires actual compiler result, original request and explicit compiler configuration.')
+    if result.status is not CompilationStatus.SUCCEEDED:
+        severity = TypeValidationSeverity.ERROR if result.status is CompilationStatus.FAILED else TypeValidationSeverity.WARNING
+        diagnostic = _manifest_diagnostic(CompilationFailure.MANIFEST_COMPILATION_NOT_SUCCESSFUL, 'Authoritative compilation is not successful; no complete runtime manifest can be assembled.', target=request.context.target, severity=severity)
+        raise RuntimeArtifactManifestError((*result.diagnostics, diagnostic), result.status)
+    if request.context.target != BUILD_TARGET or result.target != request.context.target:
+        _manifest_reject(CompilationFailure.MANIFEST_TARGET_MISMATCH, 'Only the actual artifact-build objective supports runtime artifact manifests; preparation is not a runtime target.', target=request.context.target)
+    if request.canonical_model.scope != request.context.scope or result.preparation is None or result.preparation.context.scope != request.context.scope:
+        _manifest_reject(CompilationFailure.MANIFEST_CONTEXT_MISMATCH, 'Manifest canonical/compiler/result semantic scopes disagree.', target=request.context.target)
+    if result.preparation.model is not request.canonical_model or result.preparation.context != request.context or result.validation_evidence is not request.validation_evidence:
+        _manifest_reject(CompilationFailure.MANIFEST_SNAPSHOT_MISMATCH, 'Successful result is not bound to this exact original canonical input/evidence/context.')
+    origin = result.output_origin
+    if origin is None or origin.request is not request or origin.compiler is not compiler:
+        _manifest_reject(CompilationFailure.MANIFEST_OUTPUT_UNBOUND, 'Manifest requires original compiler-produced request/configuration output association, not equal-looking results.')
+    changed = compiler._configuration_diagnostics()
+    if changed:
+        raise RuntimeArtifactManifestError(changed)
+    if tuple(o.descriptor for o in result.phase_outcomes) != compiler._descriptors or any(o.status is not CompilationPhaseStatus.COMPLETED or o.executed is not True for o in result.phase_outcomes):
+        _manifest_reject(CompilationFailure.MANIFEST_OUTPUT_UNBOUND, 'Successful configured phase completion/execution evidence does not match original composition.')
+    if not result.artifacts.artifacts or not any(CompilationCapability.EMIT_ARTIFACTS in o.descriptor.capabilities for o in result.phase_outcomes):
+        diagnostic = _manifest_diagnostic(CompilationFailure.MANIFEST_INCOMPLETE_OUTPUT, 'Runtime target requires actual complete final artifact output; IR and zero artifacts cannot substitute.', severity=TypeValidationSeverity.WARNING)
+        raise RuntimeArtifactManifestError((diagnostic,), CompilationStatus.INCOMPLETE)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RuntimeArtifactManifestCompilationAssociation:
+    """Capture checked completion metadata only; InitVar result payloads are not kept."""
+    result: InitVar[CompilationResult]
+    request: CompilationRequest
+    compiler: ModelCompiler
+    support: tuple[RuntimeArtifactKindSupport, ...]
+    output_origin: CompilationOutputOrigin = field(init=False)
+    artifacts: tuple[RuntimeArtifactDescriptor, ...] = field(init=False)
+    phase_outcomes: tuple[CompilationPhaseOutcome, ...] = field(init=False)
+    __hash__ = None
+
+    def __post_init__(self, result: CompilationResult) -> None:
+        _manifest_binding(result, self.request, self.compiler)
+        support = _manifest_support(self.support)
+        descriptors = _manifest_inventory(_runtime_descriptors(result, self.request, support))
+        object.__setattr__(self, 'support', support)
+        object.__setattr__(self, 'output_origin', result.output_origin)
+        object.__setattr__(self, 'artifacts', descriptors)
+        object.__setattr__(self, 'phase_outcomes', result.phase_outcomes)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RuntimeArtifactManifest:
+    identity: RuntimeArtifactManifestId
+    schema_version: RuntimeArtifactManifestSchemaVersion
+    semantic_context: SemanticContextRef
+    target: CompilationTargetId
+    compilation_association: RuntimeArtifactManifestCompilationAssociation
+    artifacts: tuple[RuntimeArtifactDescriptor, ...]
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.identity) is not RuntimeArtifactManifestId:
+            _manifest_reject(CompilationFailure.MANIFEST_INVALID_IDENTITY, 'Manifest identity cannot reuse semantic, IR or artifact identity.')
+        if self.schema_version is not RuntimeArtifactManifestSchemaVersion.V0:
+            _manifest_reject(CompilationFailure.MANIFEST_UNSUPPORTED_SCHEMA, 'Only explicitly supported manifest schema V0 is accepted.', identity=self.identity)
+        if type(self.compilation_association) is not RuntimeArtifactManifestCompilationAssociation:
+            _manifest_reject(CompilationFailure.MANIFEST_OUTPUT_UNBOUND, 'Manifest requires actual checked complete compilation association.', identity=self.identity)
+        request = self.compilation_association.request
+        if type(self.semantic_context) is not SemanticContextRef or self.semantic_context != request.context.scope:
+            _manifest_reject(CompilationFailure.MANIFEST_CONTEXT_MISMATCH, 'Manifest scope differs from its original compilation scope.', identity=self.identity)
+        if type(self.target) is not CompilationTargetId or self.target != request.context.target or self.target != BUILD_TARGET:
+            _manifest_reject(CompilationFailure.MANIFEST_TARGET_MISMATCH, 'Manifest target must be original supported artifact-build objective.', identity=self.identity)
+        artifacts = _manifest_inventory(self.artifacts)
+        if artifacts != self.compilation_association.artifacts or not artifacts:
+            _manifest_reject(CompilationFailure.MANIFEST_INCOMPLETE_OUTPUT, 'Manifest must preserve the entire checked final artifact inventory exactly; no subset, extras or empty replacement.', identity=self.identity)
+        object.__setattr__(self, 'artifacts', artifacts)
+
+    def same_declaration(self, other: 'RuntimeArtifactManifest') -> bool:
+        """Supported manifest metadata equivalence, not artifact payload equality."""
+        if type(other) is not RuntimeArtifactManifest:
+            raise TypeError('Manifest declaration comparison requires another actual manifest.')
+        left, right = self.compilation_association, other.compilation_association
+        comparison = CompilationResultEquivalence()
+        return ((self.identity, self.schema_version, self.semantic_context, self.target, self.artifacts) ==
+                (other.identity, other.schema_version, other.semantic_context, other.target, other.artifacts)
+                and left.support == right.support
+                and comparison.requests(left.request, right.request)
+                and comparison.configurations(left.compiler, right.compiler)
+                and tuple(_outcome_semantics(o) for o in left.phase_outcomes) == tuple(_outcome_semantics(o) for o in right.phase_outcomes))
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeArtifactManifestAssemblyResult:
+    status: CompilationStatus
+    manifest: RuntimeArtifactManifest | None = None
+    diagnostics: tuple[CompilationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not CompilationStatus or type(self.diagnostics) not in (tuple, list) or any(type(d) is not CompilationDiagnostic for d in self.diagnostics):
+            raise TypeError('Assembly uses original compilation statuses and immutable actual diagnostics.')
+        diagnostics = tuple(self.diagnostics)
+        if self.status is CompilationStatus.SUCCEEDED:
+            if type(self.manifest) is not RuntimeArtifactManifest or any(d.severity is TypeValidationSeverity.ERROR for d in diagnostics):
+                raise ValueError('Successful assembly requires complete checked manifest without errors.')
+        elif self.manifest is not None or not diagnostics:
+            raise ValueError('Non-success assembly has diagnostics and no complete/partial manifest.')
+        object.__setattr__(self, 'diagnostics', diagnostics)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeArtifactManifestAssembler:
+    support: tuple[RuntimeArtifactKindSupport, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'support', _manifest_support(self.support))
+
+    def assemble(self, result: CompilationResult, request: CompilationRequest, *, compiler: ModelCompiler, identity: RuntimeArtifactManifestId, schema_version: RuntimeArtifactManifestSchemaVersion = RuntimeArtifactManifestSchemaVersion.V0, existing_manifests: tuple[RuntimeArtifactManifest, ...] = ()) -> RuntimeArtifactManifestAssemblyResult:
+        try:
+            if type(identity) is not RuntimeArtifactManifestId:
+                _manifest_reject(CompilationFailure.MANIFEST_INVALID_IDENTITY, 'Assembly requires explicit independent manifest identity.')
+            if schema_version is not RuntimeArtifactManifestSchemaVersion.V0:
+                _manifest_reject(CompilationFailure.MANIFEST_UNSUPPORTED_SCHEMA, 'Unsupported manifest schema has no automatic migration.', identity=identity)
+            if type(existing_manifests) not in (tuple, list) or any(type(m) is not RuntimeArtifactManifest for m in existing_manifests):
+                _manifest_reject(CompilationFailure.INVALID_INPUT, 'Existing manifest membership must be an explicit finite immutable inventory.')
+            existing_manifests = tuple(existing_manifests)
+            association = RuntimeArtifactManifestCompilationAssociation(result, request, compiler, self.support)
+            seen = set()
+            for previous in sorted((m for m in existing_manifests if m.compilation_association.output_origin is association.output_origin), key=lambda m: m.identity.value):
+                if previous.identity in seen:
+                    _manifest_reject(CompilationFailure.MANIFEST_IDENTITY_COLLISION, 'Existing manifest inventory repeats identity in original compilation-output scope.', identity=previous.identity)
+                seen.add(previous.identity)
+            if identity in seen:
+                _manifest_reject(CompilationFailure.MANIFEST_IDENTITY_COLLISION, 'Manifest identity already exists within this original compilation-output scope.', identity=identity)
+            manifest = RuntimeArtifactManifest(identity, schema_version, request.context.scope, request.context.target, association, association.artifacts)
+        except RuntimeArtifactManifestError as failure:
+            return RuntimeArtifactManifestAssemblyResult(failure.status, diagnostics=failure.diagnostics)
+        return RuntimeArtifactManifestAssemblyResult(CompilationStatus.SUCCEEDED, manifest, result.diagnostics)
+
+
+__all__ += ['CompilationOutputOrigin', 'RuntimeArtifactDependencyRef', 'RuntimeArtifactMetadata',
+            'RuntimeArtifactDescriptor', 'RuntimeArtifactManifestError', 'RuntimeArtifactManifestId',
+            'RuntimeArtifactManifestSchemaVersion', 'RuntimeArtifactKindSupport',
+            'RuntimeArtifactManifestCompilationAssociation', 'RuntimeArtifactManifest',
+            'RuntimeArtifactManifestAssemblyResult', 'RuntimeArtifactManifestAssembler']
