@@ -147,3 +147,7 @@ Compiler-core now consumes semantic-kernel, model-core, compiled-contracts and t
 ### CMP-02 diagnostics
 
 Compiler diagnostic reporter composes through existing compiler-core → model-authoring/model-core/compiled-contracts/Kernel public APIs. Tooling consumes only authoring-owned diagnostic projections; no model-loader → compiler-core/contracts or domain → source tooling edge. Existing runtime boundaries, manifests, profiles and activation dependencies are unchanged. General SK-11 is unavailable and must not be replaced by a new universal diagnostic type. [ADR-0033](decisions/ADR-0033-compilation-diagnostics.md).
+
+### CMP-03 IR ownership
+
+Semantic IR envelope/payload/handoff stay compiler-local using existing Kernel/model/authoring public contracts. Artifacts remain a separate compiled-contracts boundary; runtime does not import IR/compiler/model authoring. Narrow IR identity diagnostic token projection crosses existing compiler → authoring → tooling seams without exposing payload or introducing any new dependency/profile/activation exception. [ADR-0034](decisions/ADR-0034-semantic-ir-envelope.md).

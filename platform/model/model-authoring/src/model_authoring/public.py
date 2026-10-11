@@ -2198,8 +2198,11 @@ class CompilationDiagnosticDetails:
     phase_id: str | None = None
     artifact: CompilationArtifactDiagnosticView | None = None
     semantic_context: SemanticContextRef | None = None
+    ir_identity: str | None = None
 
     def __post_init__(self) -> None:
+        if self.ir_identity is not None and (type(self.ir_identity) is not str or len(self.ir_identity) > 160 or _re.fullmatch(r'ir-[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', self.ir_identity) is None):
+            raise ValueError('IR presentation retains an actual bounded representation token.')
         if type(self.origin) is not CompilationDiagnosticOrigin:
             raise TypeError('Compiler responsibility must be explicit.')
         if self.phase_id is not None and (type(self.phase_id) is not str or _re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', self.phase_id) is None):

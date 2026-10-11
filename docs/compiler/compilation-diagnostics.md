@@ -55,3 +55,7 @@ Given the established `sales.Customer@1.0.0` model with name String required/non
 ## Deferred verification and readiness
 
 The complete specification is [137 deferred scenarios](../../test-archive/CMP-02/CMP-02-deferred-tests.md). No automated tests/scenario scripts were created or run. Source/build/import/dependency checks are separate and cannot establish semantic correctness. General SK-11 factory, richer facet contracts, future generator fixtures and applicable DRF integration remain explicit upstream prerequisites. Bounded CMP-02 implementation is ready for review/next-stage planning under those limitations; stop without implementing CMP-03.
+
+## CMP-03 bounded IR diagnostic association
+
+Existing CompilationDiagnosticAssociation gains optional typed SemanticIRId; authoring details carry only its bounded token projection. Structural/commit/handoff failures use CMP-011..020 with original existing severity and compiler-orchestrator responsibility, without replacing TYPE/MOD diagnostics. `include_ir_identities=False` hides the token by default in existing tooling transport; no payload exposure or new HTTP API. [Envelope contract](semantic-ir-envelope.md). Historical CMP-02 records are preserved; new behavior remains deferred/unverified.

@@ -1,11 +1,11 @@
 """CMP-01 deterministic compiler foundation; no concrete generators or hosting."""
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass, replace
 from collections import Counter, deque
 from enum import Enum
 from typing import Protocol, Mapping
 from types import MappingProxyType
 import re
-from semantic_kernel.public import SemanticContextRef, SemanticElementId, ElementVersionRef
+from semantic_kernel.public import SemanticContextRef, SemanticElementId, ElementVersionRef, SemanticVersion
 from model_core.public import CanonicalModel, TypeValidationSeverity
 from model_authoring.public import (
     ModelValidationResult, ModelValidationStatus, CompilationReadiness,
@@ -36,6 +36,7 @@ class CompilationPhaseStatus(Enum):
 class CompilationCapability(Enum):
     PREPARE = 'prepare'
     EMIT_ARTIFACTS = 'emit-artifacts'
+    EMIT_IR = 'emit-ir'
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,16 @@ class CompilationFailure(Enum):
     PHASE_FAILED = 'CMP-008'
     ARTIFACT_CONFLICT = 'CMP-009'
     INCOMPLETE_BUILD = 'CMP-010'
+    IR_INVALID_ENVELOPE = 'CMP-011'
+    IR_UNSUPPORTED_SCHEMA = 'CMP-012'
+    IR_INVALID_IDENTITY = 'CMP-013'
+    IR_CONTEXT_MISMATCH = 'CMP-014'
+    IR_INPUT_MISMATCH = 'CMP-015'
+    IR_UNSUPPORTED_KIND = 'CMP-016'
+    IR_PAYLOAD_MISMATCH = 'CMP-017'
+    IR_MISSING_PAYLOAD = 'CMP-018'
+    IR_INCOMPATIBLE_HANDOFF = 'CMP-019'
+    IR_DUPLICATE_IDENTITY = 'CMP-020'
 
 
 def _phase_id(value: str) -> None:
@@ -98,11 +109,14 @@ class CompilationDiagnosticAssociation:
     source_path: AuthoringSchemaPath | None = None
     related_paths: tuple[AuthoringSchemaPath, ...] = ()
     semantic_context: SemanticContextRef | None = None
+    ir_identity: 'SemanticIRId | None' = None
 
     def __post_init__(self) -> None:
         if self.artifact_target is not None and type(self.artifact_target) is not CompilationArtifactTarget:
             raise TypeError('Artifact target must be a bounded association.')
-        CompilationDiagnosticDetails(self.origin, self.phase_id, None if self.artifact_target is None else self.artifact_target.diagnostic_view, self.semantic_context)
+        if self.ir_identity is not None and type(self.ir_identity) is not SemanticIRId:
+            raise TypeError('IR diagnostic identity is independent of semantic/artifact identity.')
+        CompilationDiagnosticDetails(self.origin, self.phase_id, None if self.artifact_target is None else self.artifact_target.diagnostic_view, self.semantic_context, None if self.ir_identity is None else self.ir_identity.value)
         if self.semantic_target is not None and type(self.semantic_target) is not ModelDiagnosticTarget:
             raise TypeError('Reuse the existing semantic target; fields keep their owned FieldId.')
         if self.semantic_target is not None and type(self.semantic_target.reference) is not ElementVersionRef:
@@ -259,8 +273,16 @@ class CompilationArtifactCollection:
 class CompilationState:
     preparation: PreparedCompilationInput | None = None
     artifacts: CompilationArtifactCollection = field(default_factory=CompilationArtifactCollection)
+    ir_envelopes: tuple['SemanticIREnvelope', ...] = ()
+    phase_outcomes: tuple['CompilationPhaseOutcome', ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, 'ir_envelopes', _ir_values(self.ir_envelopes))
+        if type(self.phase_outcomes) not in (tuple, list) or any(type(o) is not CompilationPhaseOutcome for o in self.phase_outcomes):
+            raise TypeError('Internal state preserves original ordered phase outcomes.')
+        object.__setattr__(self, 'phase_outcomes', tuple(self.phase_outcomes))
+        if len({o.descriptor.id for o in self.phase_outcomes}) != len(self.phase_outcomes):
+            raise ValueError('Internal state cannot repeat phase evidence.')
         if self.preparation is not None and type(self.preparation) is not PreparedCompilationInput or type(self.artifacts) is not CompilationArtifactCollection:
             raise TypeError('Compiler state uses explicit preparation/artifact contracts, never a metadata bag.')
 
@@ -272,8 +294,10 @@ class CompilationPhaseResult:
     preparation: PreparedCompilationInput | None = None
     artifacts: tuple[CompilationArtifact, ...] = ()
     reason: str | None = None
+    ir_envelopes: tuple['SemanticIREnvelope', ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, 'ir_envelopes', _ir_candidates(self.ir_envelopes))
         if type(self.status) is not CompilationPhaseStatus or type(self.diagnostics) not in (tuple, list) or any(type(d) is not CompilationDiagnostic for d in self.diagnostics):
             raise TypeError('Phase result requires explicit status and typed diagnostics.')
         object.__setattr__(self, 'diagnostics', tuple(self.diagnostics))
@@ -281,7 +305,7 @@ class CompilationPhaseResult:
         if self.preparation is not None and type(self.preparation) is not PreparedCompilationInput:
             raise TypeError('Phase preparation must use its explicit contract.')
         if self.status is not CompilationPhaseStatus.COMPLETED:
-            if self.artifacts or self.preparation is not None:
+            if self.artifacts or self.preparation is not None or self.ir_envelopes:
                 raise ValueError('Failed/incomplete/skipped phase cannot expose successful outputs.')
             if type(self.reason) is not str or not self.reason:
                 raise ValueError('Noncompleted phase requires an explicit reason.')
@@ -477,6 +501,13 @@ class ModelCompiler:
             if any(a.scope != request.context.scope or a.target != request.context.target.value or any(not request.canonical_model.contains(r) for r in a.semantic_dependencies) for a in result.artifacts):
                 raise TypeError('Artifact scope/target disagrees with compilation contract.')
             try:
+                ir_envelopes = _merge_ir(state.ir_envelopes, result.ir_envelopes, request, descriptor)
+            except SemanticIREnvelopeError as failure:
+                diagnostics.extend(failure.diagnostics)
+                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.FAILED, (*result.diagnostics, *failure.diagnostics), 'IR output handoff rejected.', executed=True))
+                blocker, status = descriptor.id, CompilationStatus.FAILED
+                continue
+            try:
                 artifacts = CompilationArtifactCollection((*state.artifacts.artifacts, *result.artifacts))
             except CompilationArtifactConflict as conflict:
                 d = CompilationDiagnostic(CompilationFailure.ARTIFACT_CONFLICT, 'Duplicate artifact key conflicts with atomic deterministic output membership.', TypeValidationSeverity.ERROR, descriptor.id, association=CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ARTIFACT_COLLECTION, descriptor.id, artifact_target=CompilationArtifactTarget(key=conflict.key, target=request.context.target), related_targets=tuple(ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, r) for a in (*state.artifacts.artifacts, *result.artifacts) if a.key == conflict.key for r in a.semantic_dependencies)))
@@ -484,8 +515,9 @@ class ModelCompiler:
                 outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.FAILED, (*result.diagnostics, d), 'Artifact key conflict.', executed=True))
                 blocker, status = descriptor.id, CompilationStatus.FAILED
                 continue
-            state = CompilationState(preparation, artifacts)
-            outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.COMPLETED, result.diagnostics, executed=True))
+            outcome = CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.COMPLETED, result.diagnostics, executed=True)
+            outcomes.append(outcome)
+            state = CompilationState(preparation, artifacts, ir_envelopes, tuple(outcomes))
             completed.add(descriptor.id)
             capabilities.update(descriptor.capabilities)
         if status is None and (state.preparation is None or request.context.target == BUILD_TARGET and (CompilationCapability.EMIT_ARTIFACTS not in capabilities or not state.artifacts.artifacts)):
@@ -514,6 +546,16 @@ _LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({
     CompilationFailure.PHASE_FAILED: CompilationDiagnosticOrigin.PHASE,
     CompilationFailure.ARTIFACT_CONFLICT: CompilationDiagnosticOrigin.ARTIFACT_COLLECTION,
     CompilationFailure.INCOMPLETE_BUILD: CompilationDiagnosticOrigin.RESULT,
+    CompilationFailure.IR_INVALID_ENVELOPE: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_UNSUPPORTED_SCHEMA: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_INVALID_IDENTITY: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_CONTEXT_MISMATCH: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_INPUT_MISMATCH: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_UNSUPPORTED_KIND: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_PAYLOAD_MISMATCH: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_MISSING_PAYLOAD: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_INCOMPATIBLE_HANDOFF: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.IR_DUPLICATE_IDENTITY: CompilationDiagnosticOrigin.ORCHESTRATOR,
 })
 
 
@@ -557,7 +599,7 @@ class CompilationDiagnosticEntry:
             target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.reference)
         path = a.source_path if a.source_path is not None else context.source_path(target)
         related_paths = a.related_paths if a.related_paths else tuple(path for t in a.related_targets if (path := context.source_path(t)) is not None)
-        details = CompilationDiagnosticDetails(a.origin, a.phase_id, None if a.artifact_target is None else a.artifact_target.diagnostic_view, a.semantic_context)
+        details = CompilationDiagnosticDetails(a.origin, a.phase_id, None if a.artifact_target is None else a.artifact_target.diagnostic_view, a.semantic_context, None if a.ir_identity is None else a.ir_identity.value)
         return ModelDiagnosticEntry(d, target, a.related_targets, path, related_paths, extension_origin=ModelDiagnosticOrigin.COMPILER, compilation_details=details)
 
 
@@ -607,3 +649,218 @@ class CompilationDiagnosticReporter:
 __all__ += ['CompilationDiagnosticOrigin', 'CompilationArtifactTarget',
             'CompilationDiagnosticAssociation', 'CompilationDiagnosticContext',
             'CompilationDiagnosticEntry', 'CompilationDiagnosticReporter']
+
+
+class SemanticIREnvelopeError(ValueError):
+    """Expected intrinsic/handoff rejection with existing compiler diagnostics."""
+    def __init__(self, diagnostics: tuple[CompilationDiagnostic, ...]) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not CompilationDiagnostic for d in diagnostics):
+            raise TypeError('IR failure retains actual nonempty diagnostic evidence.')
+        self.diagnostics = diagnostics
+        super().__init__('Semantic IR contract rejected; inspect structured compiler diagnostics.')
+
+    def phase_failure(self, phase_id: str | None = None) -> CompilationPhaseResult:
+        if phase_id is not None:
+            _phase_id(phase_id)
+        diagnostics = []
+        for diagnostic in self.diagnostics:
+            if phase_id is not None and diagnostic.phase_id is not None and diagnostic.phase_id != phase_id:
+                raise ValueError('Failure adapter cannot replace original consumer phase evidence.')
+            if phase_id is not None and diagnostic.phase_id is None:
+                association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ORCHESTRATOR, phase_id) if diagnostic.association is None else replace(diagnostic.association, phase_id=phase_id)
+                diagnostic = replace(diagnostic, phase_id=phase_id, association=association)
+            diagnostics.append(diagnostic)
+        return CompilationPhaseResult(CompilationPhaseStatus.FAILED, tuple(diagnostics), reason='Mandatory IR input or output contract rejected.')
+
+
+def _ir_reject(code: CompilationFailure, message: str, *, identity: 'SemanticIRId | None' = None, phase_id: str | None = None, scope: SemanticContextRef | None = None, reference: ElementVersionRef | None = None) -> None:
+    target = None if reference is None else ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, reference)
+    association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ORCHESTRATOR, phase_id, semantic_target=target, semantic_context=scope, ir_identity=identity)
+    raise SemanticIREnvelopeError((CompilationDiagnostic(code, message, TypeValidationSeverity.ERROR, phase_id, reference, association=association),))
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class SemanticIRId:
+    """Explicit representation token scoped to one accepted compilation request."""
+    value: str
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not str or len(self.value) > 160 or re.fullmatch(r'ir-[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', self.value) is None:
+            _ir_reject(CompilationFailure.IR_INVALID_IDENTITY, 'IR identity requires a bounded explicit ir- representation token.')
+
+
+class SemanticIRSchemaVersion(Enum):
+    V0 = '0'
+
+
+class SemanticIRPayloadKind(Enum):
+    FOUNDATION_COORDINATES = 'foundation-coordinates'
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticIRFoundationPayload:
+    """Explicit input-coordinate inventory, not lowered Type IR or executable content."""
+    definitions: tuple[ElementVersionRef, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.definitions) not in (tuple, list) or any(type(r) is not ElementVersionRef or type(r.element_id) is not SemanticElementId or type(r.version) is not SemanticVersion for r in self.definitions):
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Foundation payload requires a finite ordered exact-reference sequence.')
+        values = tuple(self.definitions)
+        if len(set(values)) != len(values):
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Foundation coordinates cannot repeat an exact definition.')
+        object.__setattr__(self, 'definitions', values)
+
+    @property
+    def kind(self) -> SemanticIRPayloadKind:
+        return SemanticIRPayloadKind.FOUNDATION_COORDINATES
+
+
+# Closed v0 payload type; future extensions must add explicitly owned immutable contracts.
+SemanticIRPayload = SemanticIRFoundationPayload
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SemanticIRCanonicalInput:
+    """Original in-process snapshot/evidence binding; not a semantic equality/hash."""
+    request: CompilationRequest
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not CompilationRequest:
+            _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR must retain the actual canonical compilation request.')
+        request = self.request
+        evidence = request.validation_evidence
+        if request.canonical_model.scope != request.context.scope:
+            _ir_reject(CompilationFailure.IR_CONTEXT_MISMATCH, 'Canonical input scope disagrees with compiler context.', scope=request.context.scope)
+        if request.context.target not in (PREPARATION_TARGET, BUILD_TARGET) or evidence is None or evidence.status is not ModelValidationStatus.VALID or evidence.readiness is not CompilationReadiness.READY or evidence.validated_model is not request.canonical_model:
+            _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR input association requires original bound VALID/READY evidence and supported compiler context.', scope=request.context.scope)
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not SemanticIRCanonicalInput:
+            return NotImplemented
+        return self.request is other.request
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticIREnvelope:
+    identity: SemanticIRId
+    schema_version: SemanticIRSchemaVersion
+    semantic_context: SemanticContextRef
+    canonical_input: SemanticIRCanonicalInput
+    payload_kind: SemanticIRPayloadKind
+    payload: SemanticIRPayload
+    definition_origins: tuple[ElementVersionRef, ...]
+    model_wide: bool = False
+    produced_by_phase: str | None = None
+    source_associations: tuple[CanonicalSourceAssociation, ...] = ()
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.identity) is not SemanticIRId:
+            _ir_reject(CompilationFailure.IR_INVALID_IDENTITY, 'IR uses its own explicit representation identity.')
+        identity = self.identity
+        if self.schema_version is not SemanticIRSchemaVersion.V0:
+            _ir_reject(CompilationFailure.IR_UNSUPPORTED_SCHEMA, 'Only explicitly declared IR envelope schema 0 is supported.', identity=identity)
+        if type(self.semantic_context) is not SemanticContextRef or type(self.semantic_context.context_id) is not SemanticElementId:
+            _ir_reject(CompilationFailure.IR_CONTEXT_MISMATCH, 'IR scope requires the existing typed semantic context.', identity=identity)
+        if type(self.canonical_input) is not SemanticIRCanonicalInput:
+            _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR requires an actual validated canonical input association.', identity=identity)
+        request = self.canonical_input.request
+        if self.semantic_context != request.context.scope:
+            _ir_reject(CompilationFailure.IR_CONTEXT_MISMATCH, 'IR scope differs from its declared canonical input.', identity=identity, scope=self.semantic_context)
+        if self.payload_kind is not SemanticIRPayloadKind.FOUNDATION_COORDINATES:
+            _ir_reject(CompilationFailure.IR_UNSUPPORTED_KIND, 'Only the explicit foundation-coordinate payload contract is supported.', identity=identity)
+        if self.payload is None:
+            _ir_reject(CompilationFailure.IR_MISSING_PAYLOAD, 'Mandatory IR payload cannot be absent.', identity=identity)
+        if type(self.payload) is not SemanticIRFoundationPayload:
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'IR does not accept mutable bags, arbitrary implementations or artifact payloads.', identity=identity)
+        if type(self.model_wide) is not bool or type(self.definition_origins) not in (tuple, list) or any(type(r) is not ElementVersionRef or type(r.element_id) is not SemanticElementId or type(r.version) is not SemanticVersion for r in self.definition_origins):
+            _ir_reject(CompilationFailure.IR_INVALID_ENVELOPE, 'Origins require explicit exact references and a boolean model-wide declaration.', identity=identity)
+        origins = tuple(self.definition_origins)
+        if len(set(origins)) != len(origins) or not origins and not self.model_wide or origins != self.payload.definitions:
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Foundation coordinates must match ordered exact origins; empty origins require explicit model-wide scope.', identity=identity)
+        for reference in origins:
+            if not request.canonical_model.contains(reference):
+                _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR origin is outside its exact canonical snapshot.', identity=identity, reference=reference)
+        if self.produced_by_phase is not None and (type(self.produced_by_phase) is not str or re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', self.produced_by_phase) is None):
+            _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Optional candidate producer uses an existing compiler phase identifier.', identity=identity)
+        if type(self.source_associations) not in (tuple, list) or any(type(a) is not CanonicalSourceAssociation for a in self.source_associations):
+            _ir_reject(CompilationFailure.IR_INVALID_ENVELOPE, 'Source provenance seam uses actual canonical source associations.', identity=identity)
+        associations = tuple(self.source_associations)
+        if any(a not in request.source_associations or a.target.definition not in origins for a in associations):
+            _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR source associations must come from original request and declared exact origins.', identity=identity)
+        object.__setattr__(self, 'definition_origins', origins)
+        object.__setattr__(self, 'source_associations', associations)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticIREnvelopeFactory:
+    def create(self, *, identity: SemanticIRId, schema_version: SemanticIRSchemaVersion, canonical_input: SemanticIRCanonicalInput, semantic_context: SemanticContextRef, payload_kind: SemanticIRPayloadKind, payload: SemanticIRPayload, definition_origins: tuple[ElementVersionRef, ...], model_wide: bool = False, produced_by_phase: str | None = None, source_associations: tuple[CanonicalSourceAssociation, ...] = ()) -> SemanticIREnvelope:
+        return SemanticIREnvelope(identity, schema_version, semantic_context, canonical_input, payload_kind, payload, definition_origins, model_wide, produced_by_phase, source_associations)
+
+
+def _ir_candidates(values: tuple[SemanticIREnvelope, ...]) -> tuple[SemanticIREnvelope, ...]:
+    if type(values) not in (tuple, list) or any(type(e) is not SemanticIREnvelope for e in values):
+        _ir_reject(CompilationFailure.IR_INVALID_ENVELOPE, 'Phase IR output is an explicit finite sequence of actual envelopes.')
+    return tuple(values)
+
+
+def _ir_values(values: tuple[SemanticIREnvelope, ...]) -> tuple[SemanticIREnvelope, ...]:
+    envelopes = _ir_candidates(values)
+    seen = set()
+    for envelope in envelopes:
+        if envelope.identity in seen:
+            _ir_reject(CompilationFailure.IR_DUPLICATE_IDENTITY, 'Duplicate IR representation identity; no overwrite or equality exemption.', identity=envelope.identity)
+        seen.add(envelope.identity)
+    return tuple(sorted(envelopes, key=lambda e: e.identity.value))
+
+
+def _ir_current(envelope: SemanticIREnvelope, request: CompilationRequest, phase_id: str | None = None) -> None:
+    if type(envelope) is not SemanticIREnvelope or type(request) is not CompilationRequest:
+        _ir_reject(CompilationFailure.IR_INVALID_ENVELOPE, 'Handoff accepts actual typed envelope and compilation request.', phase_id=phase_id)
+    original = envelope.canonical_input.request
+    if envelope.semantic_context != request.context.scope or original.context != request.context:
+        _ir_reject(CompilationFailure.IR_CONTEXT_MISMATCH, 'IR target/context is incompatible with current compilation.', identity=envelope.identity, phase_id=phase_id, scope=request.context.scope)
+    if original is not request:
+        _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR representation belongs to another compilation request, even if snapshots appear equal.', identity=envelope.identity, phase_id=phase_id, scope=request.context.scope)
+
+
+def _merge_ir(existing: tuple[SemanticIREnvelope, ...], candidates: tuple[SemanticIREnvelope, ...], request: CompilationRequest, producer: CompilationPhaseDescriptor) -> tuple[SemanticIREnvelope, ...]:
+    if candidates and CompilationCapability.EMIT_IR not in producer.capabilities:
+        _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Phase cannot emit IR without explicit descriptor capability.', phase_id=producer.id)
+    seen = {e.identity for e in existing}
+    for envelope in candidates:
+        _ir_current(envelope, request, producer.id)
+        if envelope.produced_by_phase != producer.id:
+            _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Candidate must declare its actual producing phase at commit boundary.', identity=envelope.identity, phase_id=producer.id)
+        if envelope.identity in seen:
+            _ir_reject(CompilationFailure.IR_DUPLICATE_IDENTITY, 'IR output collides with existing or same-phase representation identity.', identity=envelope.identity, phase_id=producer.id)
+        seen.add(envelope.identity)
+    return _ir_values((*existing, *candidates))
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticIRHandoff:
+    def require(self, envelope: SemanticIREnvelope, *, request: CompilationRequest, state: CompilationState, consumer: CompilationPhaseDescriptor, required_kind: SemanticIRPayloadKind, required_schema: SemanticIRSchemaVersion = SemanticIRSchemaVersion.V0) -> SemanticIREnvelope:
+        if type(state) is not CompilationState or type(consumer) is not CompilationPhaseDescriptor:
+            raise TypeError('Handoff requires actual compiler state and consumer descriptor.')
+        _ir_current(envelope, request, consumer.id)
+        if required_schema is not SemanticIRSchemaVersion.V0 or envelope.schema_version is not required_schema:
+            _ir_reject(CompilationFailure.IR_UNSUPPORTED_SCHEMA, 'Consumer requires an unsupported or mismatched envelope schema.', identity=envelope.identity, phase_id=consumer.id)
+        if required_kind is not SemanticIRPayloadKind.FOUNDATION_COORDINATES:
+            _ir_reject(CompilationFailure.IR_UNSUPPORTED_KIND, 'Consumer payload contract is not implemented.', identity=envelope.identity, phase_id=consumer.id)
+        if envelope.payload_kind is not required_kind:
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Consumer does not accept the supplied IR payload contract.', identity=envelope.identity, phase_id=consumer.id)
+        if request.context.target not in consumer.targets:
+            _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Consumer descriptor does not support this compilation target.', identity=envelope.identity, phase_id=consumer.id)
+        if state.preparation is None or state.preparation.model is not request.canonical_model or state.preparation.context != request.context:
+            _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'Handoff state must retain preparation for this exact current input/context.', identity=envelope.identity, phase_id=consumer.id)
+        producer = next((o for o in state.phase_outcomes if o.descriptor.id == envelope.produced_by_phase), None)
+        if not any(e is envelope for e in state.ir_envelopes) or producer is None or producer.status is not CompilationPhaseStatus.COMPLETED or producer.executed is not True or CompilationCapability.EMIT_IR not in producer.descriptor.capabilities or producer.descriptor.id == consumer.id or producer.descriptor.id not in consumer.prerequisites:
+            _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Mandatory IR requires committed membership and completed executed producer evidence declared as a consumer prerequisite.', identity=envelope.identity, phase_id=consumer.id)
+        return envelope
+
+
+__all__ += ['SemanticIREnvelopeError', 'SemanticIRId', 'SemanticIRSchemaVersion',
+            'SemanticIRPayloadKind', 'SemanticIRFoundationPayload', 'SemanticIRPayload',
+            'SemanticIRCanonicalInput', 'SemanticIREnvelope', 'SemanticIREnvelopeFactory', 'SemanticIRHandoff']

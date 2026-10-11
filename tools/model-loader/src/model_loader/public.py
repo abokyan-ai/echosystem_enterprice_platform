@@ -1481,14 +1481,14 @@ class ModelDiagnosticReporter:
         return ModelDiagnosticReport(operations)
 
 
-def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_messages: bool = False, include_source_details: bool = False, include_semantic_targets: bool = False, include_artifact_targets: bool = False) -> dict[str, object]:
+def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_messages: bool = False, include_source_details: bool = False, include_semantic_targets: bool = False, include_artifact_targets: bool = False, include_ir_identities: bool = False) -> dict[str, object]:
     """Explicit JSON-ready presentation, no HTTP/permission policy or repr dump.
 
     Caller uses existing authorization before opting into source/ID/text details.
     Defaults expose no arbitrary diagnostic text, source paths or semantic IDs.
     No absolute physical filename/source content/stack trace fields are emitted.
     """
-    if type(report) is not ModelDiagnosticReport or any(type(v) is not bool for v in (include_messages, include_source_details, include_semantic_targets, include_artifact_targets)):
+    if type(report) is not ModelDiagnosticReport or any(type(v) is not bool for v in (include_messages, include_source_details, include_semantic_targets, include_artifact_targets, include_ir_identities)):
         raise TypeError('Transport requires the actual report and explicit disclosure booleans.')
     def location(loc: SourceLocation | None) -> dict[str, object] | None:
         if loc is None:
@@ -1515,6 +1515,8 @@ def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_me
                 details = entry.entry.compilation_details
                 item['compilation_phase'] = d.phase_id if details is None else details.phase_id
                 item['compilation_origin'] = None if details is None else details.origin.value
+                if include_ir_identities:
+                    item['ir_identity'] = None if details is None else details.ir_identity
                 if include_artifact_targets:
                     artifact = None if details is None else details.artifact
                     item['artifact_target'] = None if artifact is None else {'key': artifact.key, 'kind': artifact.kind, 'target': artifact.target}
