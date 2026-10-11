@@ -88,3 +88,7 @@ The initial CMP-03 foundation-only descriptions above document its introduction.
 ## CMP-06 — Deterministic Compilation
 
 Original compiler now requires frozen phase implementations with approved immutable options, captures complete configuration/classes and rejects ambiguity/drift with CMP-029/030. Existing type pass normalizes exact binding mappings; supported semantic comparison uses actual canonical/payload equality separately from original request ownership and physical presentation. No new orchestrator/module/dependency/route/ORM/generator/serialization/hash/runtime. [Contract and unexecuted Mini Sales](deterministic-compilation.md). **139** archived scenarios; tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Mutable old extension phases need adaptation; unsupported artifact/byte equality remains explicit. Stop CMP-06.
+
+## CMP-10 in-memory inspection
+
+[IR Inspector](ir-inspector.md) accepts actual envelope/immutable collection/state/phase output, selects stable IDs/kinds/exact origins and projects existing compiled-type structures. No artifact files/Manifest/receipt/serialization or compiler run required. Existing foundation-coordinates has no v0 inspection handler and is explicitly INCOMPLETE; source IR stays unchanged. [179 deferred cases](../../test-archive/CMP-10/CMP-10-deferred-tests.md), tests executed 0.

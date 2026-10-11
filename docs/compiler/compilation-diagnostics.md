@@ -71,3 +71,7 @@ CMP-044..061 map respectively to invalid input, compilation not ready, manifest 
 ## CMP-09 retrieval diagnostics
 
 CMP-062..080 identify invalid request, manifest mismatch, receipt mismatch, unknown artifact, invalid selection, unsupported source, unsafe path, unsupported file type, missing file, access denied, size limit, size mismatch, digest mismatch, required digest absent, I/O failure, incomplete set, concurrent modification, unsupported digest and invalid policy. RESULT origin with trailing typed read_stage/read_source_type, existing artifact/manifest/context/validated relative location; raw association retained, model projection compatible. CMP-06 comparison includes new read fields. Close error retains primary evidence; public messages omit absolute paths/OS details and do not blame semantic validation. [Contract](artifact-reader.md).
+
+## CMP-10 inspection diagnostics
+
+CMP-081..092 respectively: invalid request, unsupported schema, unsupported payload, payload mismatch, invalid envelope, duplicate identity, unknown selection, invalid field, structural limit, source unavailable, invalid options, text limit. Existing RESULT origin and actual IR/exact type/FieldId/producer/reliable requested source-schema association. Missing optional sources WARNING, unavailable IR/capability/bounds INCOMPLETE; malformed input/shape FAILED. These do not modify original compilation/status/phase outcomes or create TYPE-06 failures. Full SK-11 remains absent. [Inspector contract](ir-inspector.md).

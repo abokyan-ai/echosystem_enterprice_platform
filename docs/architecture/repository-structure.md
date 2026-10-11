@@ -95,3 +95,7 @@ Shared compiled-contracts owns immutable artifact origins/dependencies/descripto
 ### CMP-09 Artifact Reader
 
 Pure read contracts and preflight in compiler-core; separate read-only LocalFilesystemArtifactReader reuses `tools/artifact-writer` public root configuration and existing Linux boundary. No second root/receipt/layout/module hierarchy. [Contract](../compiler/artifact-reader.md), [source/static record](cmp09-verification.md), [sole deferred archive](../../test-archive/CMP-09/CMP-09-deferred-tests.md). No automated tests or read/write experiments.
+
+### CMP-10 IR Inspector
+
+Pure contracts and service in existing compiler-core public API; no package/config/adapter changes. Explicit actual IR sources and typed immutable projections, optional bounded developer text. [Contract](../compiler/ir-inspector.md), [source/static record](cmp10-verification.md), [sole archive](../../test-archive/CMP-10/CMP-10-deferred-tests.md). No tests/demos/runtime/filesystem.
