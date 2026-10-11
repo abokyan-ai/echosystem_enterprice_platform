@@ -114,3 +114,7 @@ Original compiler now requires frozen phase implementations with approved immuta
 ## CMP-07 — Runtime Artifact Manifest
 
 Shared compiled-contracts owns immutable artifact origins/dependencies/descriptors; compiler-core owns bound manifest/V0/assembly using original result status and complete final artifact collection. Original result gains trailing optional request/configuration output origin; legacy unbound result cannot authorize manifest. Typed artifact/manifest diagnostic associations extend compatibly; semantic comparison includes them. No generator/runtime imports/API/ORM/storage/hash/deploy added. Current Type IR-only build stays INCOMPLETE, default runtime-kind approvals empty. [Contract and unexecuted Mini Sales](runtime-artifact-manifest.md). **144** deferred scenarios, tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-07.
+
+## CMP-08 — Artifact Writer
+
+Pure writer contracts/preflight/plan/result/receipt reuse original CMP-01 result and CMP-07 assembly; exact approved byte fields only. Secure Linux filesystem materialization is owned by separate constrained `tools/artifact-writer`, never imported by compiler. FAIL_IF_EXISTS complete-directory NOREPLACE commit, explicit synchronization and owned cleanup. [Contract](artifact-writer.md), [static record](../architecture/cmp08-verification.md), [158 deferred cases](../../test-archive/CMP-08/CMP-08-deferred-tests.md). Tests implemented/executed 0; **DEFERRED / NOT VERIFIED**. No generator/publication/API/runtime additions. Stop CMP-08.

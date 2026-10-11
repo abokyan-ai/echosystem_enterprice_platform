@@ -312,6 +312,13 @@
       "allowed_zones": [
         "model"
       ]
+    },
+    "artifact-materialization": {
+      "zone": "tooling",
+      "path_prefix": "tools/artifact-writer",
+      "allowed_zones": [
+        "compiler"
+      ]
     }
   }
 }

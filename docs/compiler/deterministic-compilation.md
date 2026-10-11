@@ -65,3 +65,7 @@ Explicit future Customer@1.1.0 preserves both versions with its own ir-sales.cus
 ## CMP-07 — Runtime Artifact Manifest
 
 Shared compiled-contracts owns immutable artifact origins/dependencies/descriptors; compiler-core owns bound manifest/V0/assembly using original result status and complete final artifact collection. Original result gains trailing optional request/configuration output origin; legacy unbound result cannot authorize manifest. Typed artifact/manifest diagnostic associations extend compatibly; semantic comparison includes them. No generator/runtime imports/API/ORM/storage/hash/deploy added. Current Type IR-only build stays INCOMPLETE, default runtime-kind approvals empty. [Contract and unexecuted Mini Sales](runtime-artifact-manifest.md). **144** deferred scenarios, tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-07.
+
+## CMP-08 output plan determinism
+
+Existing artifact-key order, exact producer bytes, identical descriptor/layout/destination semantics give equivalent committed relative layout. Input source order does not change output order. Explicit complete key/kind mappings or validated kind__key.bin; no time/PID/random committed paths. Private staging randomness is not output identity. Diagnostic equivalence includes typed write-stage/location. FAIL_IF_EXISTS repetition is a conflict, not a successful idempotent replay. No universal byte reproducibility/encoding/payload equality is inferred. [Writer contract](artifact-writer.md), [deferred archive](../../test-archive/CMP-08/CMP-08-deferred-tests.md).

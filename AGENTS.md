@@ -16,3 +16,5 @@ The user's current instruction applies to every implementation task in this repo
 Future deferred-suite execution requires an explicit later user instruction permitting it, a fixed source revision, available prerequisite contracts/fixtures and recorded evidence. Do not enable test execution merely because a CI job is green. The existing CI workflow's `DEFER_COMPREHENSIVE_TESTS` flag defaults to true; change it only when future execution is explicitly authorized.
 
 Historical executed verification records remain factual and must not be erased or relabeled. A new archive's NOT_RUN status records execution under that archive revision; it does not negate earlier test runs.
+
+Task-specific exception: the latest CMP-08 attachment, section 37, explicitly requires exactly `test-archive/CMP-08/CMP-08-deferred-tests.md` and prohibits archive README/additional specification files. Honor that more recent instruction for CMP-08 only. Other tasks retain the standing archive layout unless the user explicitly supersedes it. This exception does not authorize test execution or the next task.

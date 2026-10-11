@@ -87,3 +87,7 @@ Original compiler now requires frozen phase implementations with approved immuta
 ## CMP-07 — Runtime Artifact Manifest
 
 Shared compiled-contracts owns immutable artifact origins/dependencies/descriptors; compiler-core owns bound manifest/V0/assembly using original result status and complete final artifact collection. Original result gains trailing optional request/configuration output origin; legacy unbound result cannot authorize manifest. Typed artifact/manifest diagnostic associations extend compatibly; semantic comparison includes them. No generator/runtime imports/API/ORM/storage/hash/deploy added. Current Type IR-only build stays INCOMPLETE, default runtime-kind approvals empty. [Contract and unexecuted Mini Sales](../compiler/runtime-artifact-manifest.md). **144** deferred scenarios, tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-07.
+
+### CMP-08 Artifact Writer
+
+`tools/artifact-writer/src/artifact_writer/public.py` owns trusted root configuration and the secure Linux filesystem adapter. `platform/compiler/compiler-core/src/compiler_core/public.py` retains pure writer domain/application contracts and planning. The tooling module/profile declares only compiler-core public API dependency. [Static/source record](cmp08-verification.md), [contract](../compiler/artifact-writer.md), [sole deferred archive](../../test-archive/CMP-08/CMP-08-deferred-tests.md). No executable tests, producer or runtime/API changes.
