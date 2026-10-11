@@ -84,3 +84,7 @@ The complete future specification is [CMP-04-deferred-tests.md](../../test-archi
 ## CMP-05 — Type Compiler Pass
 
 Existing compiler-core now exposes TypeCompilerPass, reusing CMP-04 lower_payload and CMP-03 factory; old CompiledTypeLoweringPhase aliases the same implementation/stable identity. Canonical multi-version ordering, explicit request-local IDs, collision/rerun/exact-origin guards and atomic existing coordinator handoff; no partial failure output. No dependency/module/HTTP/ORM/runtime/generator additions. [Contract and unexecuted Mini Sales](type-compiler-pass.md). **129** deferred scenarios, tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-05.
+
+## CMP-10 structural projection
+
+[IR Inspector](ir-inspector.md) preserves exact type identity/version/name/scope, declaration-ordered FieldIds/names, seven primitives, versionless ElementRef, independent presence/nullability and exact existing constraint values. No lower_payload/DataFacet/TYPE-06 rerun, canonical comparison, graph expansion or runtime mapping. Optional source/text projection is bounded and immutable; no source mutation or canonical serializer. Tests deferred, not verified.

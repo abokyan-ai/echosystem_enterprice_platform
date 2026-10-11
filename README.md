@@ -228,3 +228,7 @@ Pure original-result/manifest/byte-source contracts and deterministic plan, plus
 ### CMP-09 — Artifact Reader
 
 Manifest/receipt-driven identity selections, trusted root resolution, server-bounded read limits, safe Linux regular-file access, exact bytes/length/declared-digest verification and atomic immutable selected results. Separate reader in existing tooling, no repair/decoder/runtime/API. [Contract](docs/compiler/artifact-reader.md) · [Source/static record](docs/architecture/cmp09-verification.md) · [173 deferred scenarios](test-archive/CMP-09/CMP-09-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Actual final producer/receipt prerequisite absent; Mini Sales is conceptual only. Stop CMP-09.
+
+### CMP-10 — IR Inspector
+
+Read-only in-memory Compiled Type IR inspection with exact envelope/type/field/reference/constraint/origin views, bounded selection and optional escaped developer text. Preserves source IR and independent compilation status; no parsing/validation/lowering/artifact/runtime behavior. [Contract](docs/compiler/ir-inspector.md) · [Source/static record](docs/architecture/cmp10-verification.md) · [179 deferred scenarios](test-archive/CMP-10/CMP-10-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Foundation/future payload handlers unavailable, source maps optional. Stop CMP-10.

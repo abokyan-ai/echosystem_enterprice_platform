@@ -175,3 +175,7 @@ Pure compiler-core writer contracts/planning retain neutral stdlib restrictions.
 ### CMP-09 — Read-only retrieval in existing tooling boundary
 
 Compiler-core owns pure reader contracts/preflight/result/evidence and source alias to existing destination. Existing artifact-writer tooling owns a separate LocalFilesystemArtifactReader, sharing trusted root configuration and secure root handles without invoking write/staging/rename/cleanup operations. Existing constrained profile and compiler public dependency unchanged; no new edge/module/neutral capability/exception/HTTP/runtime/activation change. [ADR-0040](decisions/ADR-0040-artifact-reader.md), [contract](../compiler/artifact-reader.md), [173 deferred cases](../../test-archive/CMP-09/CMP-09-deferred-tests.md), tests created/executed **0**, **DEFERRED / NOT VERIFIED**.
+
+### CMP-10 — Pure in-memory inspection
+
+Existing compiler-core public API owns typed bounded IR inspector/views/diagnostics/equivalence/optional text, reusing existing model/Kernel/authoring contracts. No new module/edge/exception/neutral capability/framework/HTTP/ORM/filesystem/tooling/runtime import. No artifact Manifest/receipt/storage requirement for in-memory IR. [ADR-0041](decisions/ADR-0041-ir-inspector.md), [contract](../compiler/ir-inspector.md), [179 deferred cases](../../test-archive/CMP-10/CMP-10-deferred-tests.md), tests created/executed **0**, **DEFERRED / NOT VERIFIED**.

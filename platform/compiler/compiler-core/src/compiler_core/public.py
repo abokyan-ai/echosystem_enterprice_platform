@@ -9,6 +9,9 @@ from semantic_kernel.public import SemanticContextRef, SemanticElementId, Elemen
 from model_core.public import (CanonicalModel, TypeValidationSeverity, TypeDataComposition,
     FieldId, FieldName, FieldDefinition, FieldConstraintSet, DataFacet, DataFacetError,
     PrimitiveTypeRef, SemanticTypeRef, TypeRef)
+from model_core.public import (FieldPresence, FieldNullability, ConstraintKind,
+    NumericConstraintValue, MinLengthConstraint, MaxLengthConstraint, MinimumConstraint,
+    MaximumConstraint, PatternConstraint, PrecisionConstraint, ScaleConstraint)
 from model_authoring.public import (
     ModelValidationResult, ModelValidationStatus, CompilationReadiness,
     CanonicalSourceAssociation, ModelDiagnosticContext, ModelDiagnosticEntry,
@@ -136,6 +139,18 @@ class CompilationFailure(Enum):
     READ_CONCURRENT_MODIFICATION = 'CMP-078'
     READ_UNSUPPORTED_DIGEST = 'CMP-079'
     READ_INVALID_POLICY = 'CMP-080'
+    INSPECT_INVALID_REQUEST = 'CMP-081'
+    INSPECT_UNSUPPORTED_SCHEMA = 'CMP-082'
+    INSPECT_UNSUPPORTED_PAYLOAD = 'CMP-083'
+    INSPECT_PAYLOAD_MISMATCH = 'CMP-084'
+    INSPECT_INVALID_ENVELOPE = 'CMP-085'
+    INSPECT_DUPLICATE_IDENTITY = 'CMP-086'
+    INSPECT_UNKNOWN_SELECTION = 'CMP-087'
+    INSPECT_INVALID_FIELD = 'CMP-088'
+    INSPECT_LIMIT_EXCEEDED = 'CMP-089'
+    INSPECT_SOURCE_UNAVAILABLE = 'CMP-090'
+    INSPECT_INVALID_OPTIONS = 'CMP-091'
+    INSPECT_TEXT_LIMIT_EXCEEDED = 'CMP-092'
 
 
 def _phase_id(value: str) -> None:
@@ -2262,3 +2277,484 @@ __all__ += ['ArtifactReadStage', 'ArtifactReadSourceType', 'ArtifactReadSource',
             'ArtifactReadDiagnostics', 'ArtifactReadSelection', 'ArtifactReadPolicy',
             'ArtifactReadRequest', 'ArtifactReadPlan', 'ArtifactReadPlanner',
             'ArtifactReadVerification', 'RetrievedArtifact', 'ArtifactReadResult', 'ArtifactReader']
+
+
+class IRInspectionError(ValueError):
+    def __init__(self, diagnostics: tuple[CompilationDiagnostic, ...], status: CompilationStatus = CompilationStatus.FAILED) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not CompilationDiagnostic for d in diagnostics) or status not in (CompilationStatus.FAILED, CompilationStatus.INCOMPLETE):
+            raise TypeError('Inspection rejection retains actual diagnostics and non-success status.')
+        self.diagnostics = diagnostics
+        self.status = status
+        super().__init__('IR inspection rejected; inspect structured diagnostics.')
+
+
+def _inspection_diagnostic(code: CompilationFailure, message: str, *, envelope: SemanticIREnvelope | None = None, reference: ElementVersionRef | None = None, field_id: FieldId | None = None, identity: SemanticIRId | None = None, source_path: AuthoringSchemaPath | None = None, warning: bool = False) -> CompilationDiagnostic:
+    target = None if reference is None else ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION if field_id is None else ModelDiagnosticTargetKind.FIELD, reference, field_id)
+    phase = None if envelope is None else envelope.produced_by_phase
+    association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.RESULT, phase, semantic_target=target, source_path=source_path, semantic_context=None if envelope is None else envelope.semantic_context, ir_identity=identity if envelope is None else envelope.identity)
+    return CompilationDiagnostic(code, message, TypeValidationSeverity.WARNING if warning else TypeValidationSeverity.ERROR, phase, reference, association=association)
+
+
+def _inspection_reject(code: CompilationFailure, message: str, *, incomplete: bool = False, **associations: object) -> None:
+    raise IRInspectionError((_inspection_diagnostic(code, message, warning=incomplete, **associations),), CompilationStatus.INCOMPLETE if incomplete else CompilationStatus.FAILED)
+
+
+class IRInspectionSelectionMode(Enum):
+    ALL_ENVELOPES = 'all-envelopes'
+    BY_IR_IDENTITY = 'by-ir-identity'
+    BY_PAYLOAD_KIND = 'by-payload-kind'
+    BY_SEMANTIC_ORIGIN = 'by-semantic-origin'
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionSelection:
+    mode: IRInspectionSelectionMode = IRInspectionSelectionMode.ALL_ENVELOPES
+    identity: SemanticIRId | None = None
+    payload_kind: SemanticIRPayloadKind | None = None
+    semantic_origin: ElementVersionRef | None = None
+
+    def __post_init__(self) -> None:
+        expected = {IRInspectionSelectionMode.ALL_ENVELOPES: (), IRInspectionSelectionMode.BY_IR_IDENTITY: ('identity',), IRInspectionSelectionMode.BY_PAYLOAD_KIND: ('payload_kind',), IRInspectionSelectionMode.BY_SEMANTIC_ORIGIN: ('semantic_origin',)}
+        if type(self.mode) is not IRInspectionSelectionMode or tuple(name for name in ('identity', 'payload_kind', 'semantic_origin') if getattr(self, name) is not None) != expected[self.mode]:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Selection requires exactly the typed selector appropriate to its mode.')
+        for value, owned in ((self.identity, SemanticIRId), (self.payload_kind, SemanticIRPayloadKind), (self.semantic_origin, ElementVersionRef)):
+            if value is not None and type(value) is not owned:
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Selection does not accept display names, paths or semantic identities as IR identities.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionOptions:
+    include_envelope_metadata: bool = True
+    include_semantic_origins: bool = True
+    include_constraints: bool = True
+    include_source_associations: bool = False
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not bool for v in (self.include_envelope_metadata, self.include_semantic_origins, self.include_constraints, self.include_source_associations)):
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_OPTIONS, 'Inspection options require explicit actual booleans.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionLimits:
+    maximum_envelopes: int = 128
+    maximum_fields_per_type: int = 1024
+    maximum_total_fields: int = 8192
+    maximum_output_characters: int = 262144
+    maximum_source_associations: int = 8192
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or v <= 0 for v in (self.maximum_envelopes, self.maximum_fields_per_type, self.maximum_total_fields, self.maximum_output_characters, self.maximum_source_associations)):
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_OPTIONS, 'Inspection limits must be positive actual integers.')
+
+    def bounded_by(self, server: 'IRInspectionLimits') -> 'IRInspectionLimits':
+        if type(server) is not IRInspectionLimits:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_OPTIONS, 'Trusted server maxima require actual inspection limits.')
+        return IRInspectionLimits(min(self.maximum_envelopes, server.maximum_envelopes), min(self.maximum_fields_per_type, server.maximum_fields_per_type), min(self.maximum_total_fields, server.maximum_total_fields), min(self.maximum_output_characters, server.maximum_output_characters), min(self.maximum_source_associations, server.maximum_source_associations))
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionRequest:
+    source: SemanticIREnvelope | tuple[SemanticIREnvelope, ...] | CompilationState | CompilationPhaseResult
+    selection: IRInspectionSelection = field(default_factory=IRInspectionSelection)
+    options: IRInspectionOptions = field(default_factory=IRInspectionOptions)
+    limits: IRInspectionLimits = field(default_factory=IRInspectionLimits)
+
+    def __post_init__(self) -> None:
+        if type(self.source) not in (SemanticIREnvelope, tuple, CompilationState, CompilationPhaseResult):
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Source must be actual in-memory envelope, explicit immutable collection or typed available compiler IR output.')
+        if type(self.selection) is not IRInspectionSelection or type(self.options) is not IRInspectionOptions or type(self.limits) is not IRInspectionLimits:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Request requires actual typed selection, options and limits.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRPrimitiveReferenceInspectionView:
+    primitive: PrimitiveType
+
+    def __post_init__(self) -> None:
+        if type(self.primitive) is not PrimitiveType:
+            raise TypeError('Primitive inspection preserves the owned Kernel vocabulary.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRSemanticReferenceInspectionView:
+    reference: ElementRef
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not ElementRef or type(self.reference.element_id) is not SemanticElementId:
+            raise TypeError('Semantic inspection preserves identity-only ElementRef without resolution.')
+
+
+IRTypeReferenceInspectionView = IRPrimitiveReferenceInspectionView | IRSemanticReferenceInspectionView
+
+
+@dataclass(frozen=True, slots=True)
+class IRConstraintInspectionView:
+    kind: ConstraintKind
+    value: int | str | NumericConstraintValue
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not ConstraintKind or type(self.value) not in (int, str, NumericConstraintValue):
+            raise TypeError('Constraint projection retains owned kind and exact scalar value, never float/evaluation.')
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledFieldInspectionView:
+    id: FieldId
+    name: FieldName
+    reference: IRTypeReferenceInspectionView
+    presence: FieldPresence
+    nullability: FieldNullability
+    constraints: tuple[IRConstraintInspectionView, ...] | None
+
+    def __post_init__(self) -> None:
+        if type(self.id) is not FieldId or type(self.name) is not FieldName or type(self.reference) not in (IRPrimitiveReferenceInspectionView, IRSemanticReferenceInspectionView) or type(self.presence) is not FieldPresence or type(self.nullability) is not FieldNullability:
+            raise TypeError('Field view requires distinct original field identities, reference and presence/nullability.')
+        if self.constraints is not None and (type(self.constraints) is not tuple or any(type(c) is not IRConstraintInspectionView for c in self.constraints)):
+            raise TypeError('Constraint inspection is omitted or an immutable ordered projection.')
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTypeInspectionView:
+    type_identity: ElementVersionRef
+    qualified_name: QualifiedName
+    semantic_context: SemanticContextRef
+    fields: tuple[CompiledFieldInspectionView, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.type_identity) is not ElementVersionRef or type(self.qualified_name) is not QualifiedName or type(self.semantic_context) is not SemanticContextRef or type(self.fields) is not tuple or any(type(f) is not CompiledFieldInspectionView for f in self.fields):
+            raise TypeError('Type view retains actual exact source identity/name/context and ordered immutable fields.')
+
+
+@dataclass(frozen=True, slots=True)
+class IREnvelopeMetadataInspectionView:
+    schema_version: SemanticIRSchemaVersion
+    canonical_origin: SemanticIRCanonicalInput = field(repr=False)
+    produced_by_phase: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not SemanticIRSchemaVersion or type(self.canonical_origin) is not SemanticIRCanonicalInput:
+            raise TypeError('Metadata preserves actual schema and original immutable input association.')
+        if self.produced_by_phase is not None:
+            _phase_id(self.produced_by_phase)
+
+
+@dataclass(frozen=True, slots=True)
+class IREnvelopeInspectionView:
+    identity: SemanticIRId
+    payload_kind: SemanticIRPayloadKind
+    semantic_context: SemanticContextRef
+    payload: CompiledTypeInspectionView
+    metadata: IREnvelopeMetadataInspectionView | None
+    semantic_origins: tuple[ElementVersionRef, ...] | None
+    model_wide: bool | None
+    source_associations: tuple[CanonicalSourceAssociation, ...] | None
+
+    def __post_init__(self) -> None:
+        if type(self.identity) is not SemanticIRId or self.payload_kind is not SemanticIRPayloadKind.COMPILED_TYPE_IR or type(self.semantic_context) is not SemanticContextRef or type(self.payload) is not CompiledTypeInspectionView or self.payload.semantic_context != self.semantic_context:
+            raise TypeError('Envelope view is an explicitly supported typed projection with original scope/identity.')
+        if self.metadata is not None and type(self.metadata) is not IREnvelopeMetadataInspectionView:
+            raise TypeError('Metadata is actual immutable projection or omitted.')
+        if self.semantic_origins is not None and (type(self.semantic_origins) is not tuple or any(type(r) is not ElementVersionRef for r in self.semantic_origins) or type(self.model_wide) is not bool) or self.semantic_origins is None and self.model_wide is not None:
+            raise TypeError('Origins and model-wide declaration are explicitly projected or omitted together.')
+        if self.source_associations is not None and (type(self.source_associations) is not tuple or any(type(a) is not CanonicalSourceAssociation for a in self.source_associations)):
+            raise TypeError('Source projection contains only actual immutable schema-tree associations.')
+        if self.source_associations is not None and any(type(s) is str and ('/' in s or '\\' in s or any(ord(c) < 32 for c in s)) for a in self.source_associations for s in a.path.segments):
+            raise ValueError('Source projection cannot expose unrestricted filesystem-like coordinates.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionResult:
+    """Inspection outcome only; never updates compilation readiness/status."""
+    status: CompilationStatus
+    views: tuple[IREnvelopeInspectionView, ...] = ()
+    diagnostics: tuple[CompilationDiagnostic, ...] = ()
+    selected_identities: tuple[SemanticIRId, ...] = ()
+    effective_limits: IRInspectionLimits | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not CompilationStatus or type(self.views) is not tuple or any(type(v) is not IREnvelopeInspectionView for v in self.views) or type(self.diagnostics) is not tuple or any(type(d) is not CompilationDiagnostic for d in self.diagnostics) or type(self.selected_identities) is not tuple or any(type(i) is not SemanticIRId for i in self.selected_identities):
+            raise TypeError('Inspection result retains immutable actual projections/diagnostics/selected identities.')
+        if self.effective_limits is not None and type(self.effective_limits) is not IRInspectionLimits:
+            raise TypeError('Effective inspection bounds must be typed.')
+        if self.status is CompilationStatus.SUCCEEDED:
+            if not self.views or tuple(v.identity for v in self.views) != self.selected_identities or self.effective_limits is None or any(d.severity is TypeValidationSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Successful inspection requires every selected view within actual limits without errors.')
+            if len(self.views) > self.effective_limits.maximum_envelopes or any(len(v.payload.fields) > self.effective_limits.maximum_fields_per_type for v in self.views) or sum(len(v.payload.fields) for v in self.views) > self.effective_limits.maximum_total_fields:
+                raise ValueError('Success cannot expose silently truncated or oversized structured output.')
+            if sum(len(v.source_associations or ()) for v in self.views) > self.effective_limits.maximum_source_associations:
+                raise ValueError('Success cannot exceed the effective source-association bound.')
+        elif self.views or not self.diagnostics:
+            raise ValueError('Non-success has diagnostics and exposes no partial complete views.')
+
+
+class IRInspector(Protocol):
+    def inspect(self, request: IRInspectionRequest) -> IRInspectionResult:
+        ...
+
+
+_INSPECT_CONSTRAINTS = (MinLengthConstraint, MaxLengthConstraint, MinimumConstraint, MaximumConstraint, PatternConstraint, PrecisionConstraint, ScaleConstraint)
+
+
+def _inspect_type(envelope: SemanticIREnvelope, options: IRInspectionOptions) -> CompiledTypeInspectionView:
+    payload = envelope.payload
+    output = []
+    seen_ids, seen_names = set(), set()
+    source_paths = {}
+    if options.include_source_associations:
+        for association in envelope.source_associations:
+            if association.target.definition == payload.type_identity and association.target.field_id is not None:
+                source_paths.setdefault(association.target.field_id, association.path)
+    for field_ir in payload.fields:
+        if type(field_ir) is not CompiledFieldIR or type(field_ir.id) is not FieldId or type(field_ir.name) is not FieldName:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_FIELD, 'Compiled fields require actual immutable identity/name structure.', envelope=envelope, reference=payload.type_identity)
+        path = source_paths.get(field_ir.id)
+        if field_ir.id in seen_ids or field_ir.name.value.lower() in seen_names:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_FIELD, 'Compiled fields repeat an identity or portable name.', envelope=envelope, reference=payload.type_identity, field_id=field_ir.id, source_path=path)
+        seen_ids.add(field_ir.id)
+        seen_names.add(field_ir.name.value.lower())
+        if type(field_ir.type) is PrimitiveTypeRef and type(field_ir.type.primitive) is PrimitiveType and field_ir.type.primitive.value in ('String', 'Boolean', 'Integer', 'Decimal', 'Date', 'DateTime', 'UUID'):
+            reference = IRPrimitiveReferenceInspectionView(field_ir.type.primitive)
+        elif type(field_ir.type) is SemanticTypeRef and type(field_ir.type.target) is ElementRef and type(field_ir.type.target.element_id) is SemanticElementId:
+            reference = IRSemanticReferenceInspectionView(field_ir.type.target)
+        else:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_FIELD, 'Compiled reference variant is unsupported; no inferred mapping or lookup.', envelope=envelope, reference=payload.type_identity, field_id=field_ir.id, source_path=path)
+        constraints = field_ir.constraints
+        if type(constraints) is not FieldConstraintSet or type(constraints.presence) is not FieldPresence or type(constraints.nullability) is not FieldNullability or type(constraints.value_constraints) is not tuple or any(type(c) not in _INSPECT_CONSTRAINTS for c in constraints.value_constraints):
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_FIELD, 'Compiled constraint declaration is not the supported immutable contract.', envelope=envelope, reference=payload.type_identity, field_id=field_ir.id, source_path=path)
+        if any(type(c.value) is not (NumericConstraintValue if type(c) in (MinimumConstraint, MaximumConstraint) else str if type(c) is PatternConstraint else int) for c in constraints.value_constraints):
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_FIELD, 'Compiled constraint values require exact supported scalar leaves.', envelope=envelope, reference=payload.type_identity, field_id=field_ir.id, source_path=path)
+        values = tuple(IRConstraintInspectionView(c.kind, c.value) for c in constraints.value_constraints) if options.include_constraints else None
+        output.append(CompiledFieldInspectionView(field_ir.id, field_ir.name, reference, constraints.presence, constraints.nullability, values))
+    return CompiledTypeInspectionView(payload.type_identity, payload.qualified_name, payload.semantic_context, tuple(output))
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticIRInspector:
+    server_limits: IRInspectionLimits = field(default_factory=IRInspectionLimits)
+
+    def __post_init__(self) -> None:
+        if type(self.server_limits) is not IRInspectionLimits:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_OPTIONS, 'Inspector requires explicit trusted server maximums.')
+
+    def inspect(self, request: IRInspectionRequest) -> IRInspectionResult:
+        limits = None
+        selected = ()
+        diagnostics = []
+        try:
+            if type(request) is not IRInspectionRequest:
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Inspector accepts an actual immutable request only.')
+            limits = request.limits.bounded_by(self.server_limits)
+            source = request.source
+            values = (source,) if type(source) is SemanticIREnvelope else source if type(source) is tuple else source.ir_envelopes
+            if not values:
+                _inspection_reject(CompilationFailure.INSPECT_SOURCE_UNAVAILABLE, 'No already constructed IR envelopes are available in the explicit source.', incomplete=True)
+            if len(values) > limits.maximum_envelopes:
+                _inspection_reject(CompilationFailure.INSPECT_LIMIT_EXCEEDED, 'Supplied envelope count exceeds effective inspection limits.', incomplete=True)
+            if any(type(e) is not SemanticIREnvelope for e in values):
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Explicit collection may contain actual constructed envelopes only.')
+            if any(type(e.identity) is not SemanticIRId for e in values):
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Each supplied envelope requires its actual representation identity.')
+            ordered = tuple(sorted(values, key=lambda e: e.identity.value))
+            for previous, current in zip(ordered, ordered[1:]):
+                if previous.identity == current.identity:
+                    _inspection_reject(CompilationFailure.INSPECT_DUPLICATE_IDENTITY, 'Supplied IR identities collide; no first/last-wins selection.', envelope=current)
+            if any(type(e.canonical_input) is not SemanticIRCanonicalInput or e.canonical_input.request is not ordered[0].canonical_input.request for e in ordered):
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Collection must belong to one explicit original input association; cross-request identities cannot be merged.')
+            selection = request.selection
+            chosen = tuple(e for e in ordered if selection.mode is IRInspectionSelectionMode.ALL_ENVELOPES or selection.mode is IRInspectionSelectionMode.BY_IR_IDENTITY and e.identity == selection.identity or selection.mode is IRInspectionSelectionMode.BY_PAYLOAD_KIND and e.payload_kind == selection.payload_kind or selection.mode is IRInspectionSelectionMode.BY_SEMANTIC_ORIGIN and selection.semantic_origin in e.definition_origins)
+            if not chosen:
+                _inspection_reject(CompilationFailure.INSPECT_UNKNOWN_SELECTION, 'Requested IR identity/kind/exact origin has no match in the supplied collection.', identity=selection.identity)
+            selected = tuple(e.identity for e in chosen)
+            total_fields = 0
+            total_sources = 0
+            total_source_characters = 0
+            for envelope in chosen:
+                if envelope.schema_version is not SemanticIRSchemaVersion.V0:
+                    _inspection_reject(CompilationFailure.INSPECT_UNSUPPORTED_SCHEMA, 'Requested schema has no approved inspection support.', envelope=envelope, incomplete=True)
+                if envelope.payload is None:
+                    _inspection_reject(CompilationFailure.INSPECT_PAYLOAD_MISMATCH, 'Selected envelope has no constructed payload.', envelope=envelope)
+                if envelope.payload_kind is not SemanticIRPayloadKind.COMPILED_TYPE_IR:
+                    _inspection_reject(CompilationFailure.INSPECT_UNSUPPORTED_PAYLOAD, 'Only the implemented compiled-type IR handler is supported; no reflection fallback.', envelope=envelope, incomplete=True)
+                payload = envelope.payload
+                if type(payload) is not CompiledTypeIR:
+                    _inspection_reject(CompilationFailure.INSPECT_PAYLOAD_MISMATCH, 'Discriminator and actual compiled-type payload disagree.', envelope=envelope)
+                if type(payload.fields) is not tuple or type(payload.type_identity) is not ElementVersionRef or type(payload.qualified_name) is not QualifiedName or type(payload.semantic_context) is not SemanticContextRef:
+                    _inspection_reject(CompilationFailure.INSPECT_PAYLOAD_MISMATCH, 'Compiled type payload must retain supported immutable structural leaves.', envelope=envelope)
+                if type(envelope.definition_origins) is not tuple or envelope.definition_origins != (payload.type_identity,) or envelope.model_wide is not False or envelope.semantic_context != payload.semantic_context or envelope.canonical_input.request.context.scope != envelope.semantic_context:
+                    _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Selected type envelope origin and payload/context association disagree.', envelope=envelope, reference=payload.type_identity)
+                total_fields += len(payload.fields)
+                if len(payload.fields) > limits.maximum_fields_per_type or total_fields > limits.maximum_total_fields:
+                    _inspection_reject(CompilationFailure.INSPECT_LIMIT_EXCEEDED, 'Selected fields exceed effective per-type or aggregate bounds.', envelope=envelope, reference=payload.type_identity, incomplete=True)
+                if request.options.include_source_associations:
+                    if type(envelope.source_associations) is not tuple:
+                        _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Source sidecars require an actual immutable association inventory.', envelope=envelope)
+                    total_sources += len(envelope.source_associations)
+                    if total_sources > limits.maximum_source_associations:
+                        _inspection_reject(CompilationFailure.INSPECT_LIMIT_EXCEEDED, 'Requested source associations exceed the effective bound.', envelope=envelope, incomplete=True)
+                    for association in envelope.source_associations:
+                        if type(association) is not CanonicalSourceAssociation or type(association.path) is not AuthoringSchemaPath or association.target.definition not in envelope.definition_origins:
+                            _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Source sidecar must retain an actual schema-tree coordinate and declared exact origin.', envelope=envelope)
+                        if len(association.path.segments) > limits.maximum_output_characters:
+                            _inspection_reject(CompilationFailure.INSPECT_LIMIT_EXCEEDED, 'Source coordinate structure exceeds the effective display bound.', envelope=envelope, incomplete=True)
+                        total_source_characters += len(association.path.segments) + sum(len(segment) if type(segment) is str else max(1, segment.bit_length()) for segment in association.path.segments)
+                        if total_source_characters > limits.maximum_output_characters:
+                            _inspection_reject(CompilationFailure.INSPECT_LIMIT_EXCEEDED, 'Source coordinate content exceeds its bounded representation budget.', envelope=envelope, incomplete=True)
+                        if any(type(segment) is str and ('/' in segment or '\\' in segment or any(ord(c) < 32 for c in segment)) for segment in association.path.segments):
+                            _inspection_reject(CompilationFailure.INSPECT_INVALID_ENVELOPE, 'Public source sidecars cannot expose unrestricted paths or unsafe coordinate text.', envelope=envelope)
+            views = []
+            for envelope in chosen:
+                options = request.options
+                payload_view = _inspect_type(envelope, options)
+                metadata = IREnvelopeMetadataInspectionView(envelope.schema_version, envelope.canonical_input, envelope.produced_by_phase) if options.include_envelope_metadata else None
+                associations = envelope.source_associations if options.include_source_associations else None
+                if associations is not None and not associations:
+                    diagnostics.append(_inspection_diagnostic(CompilationFailure.INSPECT_SOURCE_UNAVAILABLE, 'No source-tree association is present; semantic inspection remains available.', envelope=envelope, reference=envelope.payload.type_identity, warning=True))
+                views.append(IREnvelopeInspectionView(envelope.identity, envelope.payload_kind, envelope.semantic_context, payload_view, metadata, envelope.definition_origins if options.include_semantic_origins else None, envelope.model_wide if options.include_semantic_origins else None, associations))
+        except IRInspectionError as error:
+            return IRInspectionResult(error.status, diagnostics=(*diagnostics, *error.diagnostics), selected_identities=selected, effective_limits=limits)
+        return IRInspectionResult(CompilationStatus.SUCCEEDED, tuple(views), tuple(diagnostics), selected, limits)
+
+
+_LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({**_LEGACY_DIAGNOSTIC_OWNERS,
+    **{code: CompilationDiagnosticOrigin.RESULT for code in CompilationFailure if code.name.startswith('INSPECT_')}})
+
+__all__ += ['IRInspectionError', 'IRInspectionSelectionMode', 'IRInspectionSelection',
+            'IRInspectionOptions', 'IRInspectionLimits', 'IRInspectionRequest',
+            'IRPrimitiveReferenceInspectionView', 'IRSemanticReferenceInspectionView',
+            'IRTypeReferenceInspectionView', 'IRConstraintInspectionView',
+            'CompiledFieldInspectionView', 'CompiledTypeInspectionView',
+            'IREnvelopeMetadataInspectionView', 'IREnvelopeInspectionView',
+            'IRInspectionResult', 'IRInspector', 'SemanticIRInspector']
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionTextResult:
+    status: CompilationStatus
+    text: str | None = None
+    diagnostics: tuple[CompilationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not CompilationStatus or type(self.diagnostics) is not tuple or any(type(d) is not CompilationDiagnostic for d in self.diagnostics):
+            raise TypeError('Text presentation uses immutable bounded outcomes and existing diagnostics.')
+        if self.status is CompilationStatus.SUCCEEDED:
+            if type(self.text) is not str or not self.text or any(d.severity is TypeValidationSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Text success requires complete actual developer presentation without errors.')
+        elif self.text is not None or not self.diagnostics:
+            raise ValueError('Non-success text exposes no partial complete presentation.')
+
+
+@dataclass(frozen=True, slots=True)
+class IRInspectionTextRenderer:
+    maximum_output_characters: int = 262144
+
+    def __post_init__(self) -> None:
+        if type(self.maximum_output_characters) is not int or self.maximum_output_characters <= 0:
+            _inspection_reject(CompilationFailure.INSPECT_INVALID_OPTIONS, 'Text renderer requires a positive trusted character maximum.')
+
+    def render(self, result: IRInspectionResult) -> IRInspectionTextResult:
+        import json
+        if type(result) is not IRInspectionResult:
+            diagnostic = _inspection_diagnostic(CompilationFailure.INSPECT_INVALID_REQUEST, 'Text rendering requires an actual structured inspection result.')
+            return IRInspectionTextResult(CompilationStatus.FAILED, diagnostics=(diagnostic,))
+        if result.status is not CompilationStatus.SUCCEEDED:
+            return IRInspectionTextResult(result.status, diagnostics=result.diagnostics)
+        maximum = min(self.maximum_output_characters, result.effective_limits.maximum_output_characters)
+        parts = []
+        used = 0
+
+        def add(label: str, value: str | int | NumericConstraintValue) -> None:
+            nonlocal used
+            available = maximum - used - len(label) - 2
+            if available <= 0:
+                _inspection_reject(CompilationFailure.INSPECT_TEXT_LIMIT_EXCEEDED, 'Complete text exceeds its effective character bound; no truncated output.', incomplete=True)
+            if type(value) is NumericConstraintValue:
+                value = value.value
+            if type(value) is str:
+                if len(value) > available:
+                    _inspection_reject(CompilationFailure.INSPECT_TEXT_LIMIT_EXCEEDED, 'Display value exceeds the bounded presentation capacity.', incomplete=True)
+                rendered = json.dumps(value, ensure_ascii=True)
+            elif type(value) is int:
+                if value.bit_length() > available * 4:
+                    _inspection_reject(CompilationFailure.INSPECT_TEXT_LIMIT_EXCEEDED, 'Integer display exceeds the bounded presentation capacity.', incomplete=True)
+                try:
+                    rendered = str(value)
+                except ValueError:
+                    _inspection_reject(CompilationFailure.INSPECT_TEXT_LIMIT_EXCEEDED, 'Integer display exceeds supported conversion capacity.', incomplete=True)
+            else:
+                _inspection_reject(CompilationFailure.INSPECT_INVALID_REQUEST, 'Renderer accepts explicitly supported display scalar values only.')
+            line = label + ': ' + rendered + '\n'
+            if used + len(line) > maximum:
+                _inspection_reject(CompilationFailure.INSPECT_TEXT_LIMIT_EXCEEDED, 'Escaped complete text exceeds its effective bound.', incomplete=True)
+            parts.append(line)
+            used += len(line)
+
+        def coordinate(reference: ElementVersionRef) -> str:
+            version = reference.version
+            return reference.element_id.value + '@' + str(version.major) + '.' + str(version.minor) + '.' + str(version.patch)
+
+        try:
+            add('presentation', 'developer IR inspection; not canonical serialization')
+            for view in result.views:
+                add('ir.identity', view.identity.value)
+                add('ir.kind', view.payload_kind.value)
+                add('ir.context', view.semantic_context.context_id.value)
+                if view.metadata is not None:
+                    add('ir.schema', view.metadata.schema_version.value)
+                    add('ir.canonical-origin', 'original in-process input association')
+                    add('ir.target', view.metadata.canonical_origin.request.context.target.value)
+                    if view.metadata.produced_by_phase is not None:
+                        add('ir.producer-phase', view.metadata.produced_by_phase)
+                if view.semantic_origins is not None:
+                    for origin in view.semantic_origins:
+                        add('ir.semantic-origin', coordinate(origin))
+                    add('ir.model-wide', 'true' if view.model_wide else 'false')
+                payload = view.payload
+                add('type.identity', coordinate(payload.type_identity))
+                add('type.qualified-name', str(payload.qualified_name))
+                for compiled_field in payload.fields:
+                    add('  field.id', compiled_field.id.value)
+                    add('  field.name', compiled_field.name.value)
+                    reference = compiled_field.reference
+                    if type(reference) is IRPrimitiveReferenceInspectionView:
+                        add('  field.primitive', reference.primitive.value)
+                    else:
+                        add('  field.semantic-reference', reference.reference.element_id.value)
+                        add('  field.reference-version', 'versionless; unresolved')
+                    add('  field.presence', compiled_field.presence.value)
+                    add('  field.nullability', compiled_field.nullability.value)
+                    if compiled_field.constraints is not None:
+                        for constraint in compiled_field.constraints:
+                            add('  constraint.' + constraint.kind.value, constraint.value)
+                if view.source_associations is not None:
+                    if not view.source_associations:
+                        add('ir.source-associations', 'unavailable')
+                    for association in view.source_associations:
+                        add('  source.definition', coordinate(association.target.definition))
+                        if association.target.field_id is not None:
+                            add('  source.field', association.target.field_id.value)
+                        for segment in association.path.segments:
+                            add('  source.schema-segment', segment)
+        except IRInspectionError as error:
+            return IRInspectionTextResult(error.status, diagnostics=(*result.diagnostics, *error.diagnostics))
+        return IRInspectionTextResult(CompilationStatus.SUCCEEDED, ''.join(parts), result.diagnostics)
+
+
+class IRInspectionEquivalence:
+    """CMP-06 supported comparison; original association identity remains distinct."""
+    @staticmethod
+    def views(left: tuple[IREnvelopeInspectionView, ...], right: tuple[IREnvelopeInspectionView, ...]) -> bool:
+        if type(left) is not tuple or type(right) is not tuple or any(type(v) is not IREnvelopeInspectionView for v in (*left, *right)):
+            raise TypeError('Inspection comparison accepts actual immutable projected views.')
+        if len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            if replace(a, metadata=None) != replace(b, metadata=None):
+                return False
+            if (a.metadata is None) != (b.metadata is None):
+                return False
+            if a.metadata is not None and ((a.metadata.schema_version, a.metadata.produced_by_phase) != (b.metadata.schema_version, b.metadata.produced_by_phase) or not CompilationResultEquivalence().requests(a.metadata.canonical_origin.request, b.metadata.canonical_origin.request)):
+                return False
+        return True
+
+
+__all__ += ['IRInspectionTextResult', 'IRInspectionTextRenderer', 'IRInspectionEquivalence']

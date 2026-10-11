@@ -1,0 +1,15 @@
+# ADR-0041 — Immutable bounded inspection of existing compiled type IR
+
+Date: 2026-10-11. Task CMP-10. Implemented decision; behavior **DEFERRED / NOT VERIFIED**.
+
+Keep pure inspector contracts/service/views/diagnostics and optional text in existing compiler-core public API. Sources are actual envelope, immutable tuple, explicit CompilationState/CompilationPhaseResult IR outputs. One original input scope per collection; duplicate IR tokens rejected. No new module/dependency/capability/registry/reflection/parsing/filesystem/framework. Existing final CompilationResult does not export IR; do not fabricate it or require final compilation success for explicitly available intermediate IR.
+
+Support COMPILED_TYPE_IR explicitly. Existing foundation-coordinates and future payload kinds have no v0 handler, produce INCOMPLETE. Check intrinsic shape/origin/context/reference/scalar compatibility without validation/lowering/IR-versus-canonical comparison. Views retain typed original IR/semantic/field identities, exact version/QName/context, field/origin ordering, primitive vocabulary, versionless ElementRef and exact immutable constraint values. Share readonly original canonical input association, not a new fingerprint or full envelope copy. No defaults/registry/latest/recursive graph/instance evaluation.
+
+Select ALL/typed IR ID/kind/exact semantic origin; no unknown fallback. Four projection options, core identity/kind/scope always visible. Requested absent source sidecars yield WARNING and accurate empty tuple, not failed valid semantic view. Only bounded original schema-tree mappings; no physical path/coordinates invented or unsafe public path-like/control text. Diagnostic field source mapping uses a reliable existing coordinate, no producer failure or source compilation mutation.
+
+Server maxima bound supplied envelopes, selected fields, requested sidecars and optional text, effective caller/server minima. All-or-nothing successful views/text, no silent truncation. Primitive and semantic references are leaf projections, constraints exact numeric text and unevaluated pattern declarations. Independent IRInspectionResult status does not change original compilation/status/state/outcomes/readiness. Supported explicit view equivalence delegates original input comparison to CMP-06; original association identity remains actual provenance.
+
+Optional renderer uses stable explicit labels and escaped exact scalar values, bounded before/after escaping and integer conversion, no repr/dataclass dumps/persistence/serialization/CLI/decoder. Text is developer presentation, not canonical byte reproducibility/runtime format.
+
+Existing Django/DRF API requirement absent, distributions not installed; no endpoint/ORM/migration/permissions changes. General SK-11/full TYPE-01/portable authenticated provenance/future handlers remain gaps. [Contract](../../compiler/ir-inspector.md), [179 deferred cases](../../../test-archive/CMP-10/CMP-10-deferred-tests.md), tests implemented/executed **0**. Latest section 41 overrides generic archive README layout for CMP-10 only. Stop CMP-10; no CMP-11.

@@ -73,3 +73,7 @@ Existing artifact-key order, exact producer bytes, identical descriptor/layout/d
 ## CMP-09 deterministic selected reads
 
 Same accepted manifest/receipt/source/effective policy and unchanged stored bytes give equivalent selected content/evidence in manifest key order. Explicit key input order does not drive results, no directory enumeration/time/random/cache ordering. Sequential first failure defines diagnostics, including read stage/source in semantic comparison. Atomic exposed result is not a filesystem snapshot; ALL verifies declared artifacts, not current directory exclusivity. [Reader contract](artifact-reader.md), [173 deferred scenarios](../../test-archive/CMP-09/CMP-09-deferred-tests.md).
+
+## CMP-10 deterministic inspection
+
+Representation-ID collection order follows CMP-03 committed inventory; field/origin/source and existing normalized constraint order preserved. Same actual input/options yields equivalent projections. Canonical metadata retains original association identity; IRInspectionEquivalence delegates supported cross-request input comparison to CMP-06 rather than authenticating provenance. Escaped developer text uses fixed labels and exact numeric text, no canonical serialization. No repeated compilation/inspection experiment. [Contract](ir-inspector.md), [179 deferred cases](../../test-archive/CMP-10/CMP-10-deferred-tests.md).

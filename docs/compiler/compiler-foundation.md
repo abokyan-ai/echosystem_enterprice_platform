@@ -122,3 +122,7 @@ Pure writer contracts/preflight/plan/result/receipt reuse original CMP-01 result
 ## CMP-09 — Artifact Reader
 
 Pure manifest/receipt/selection/limits/verification contracts and planning plus an independent read-only Linux adapter in existing tooling. Stable artifact identities resolve actual receipt locations; bounded exact bytes/length/digest, explicit selected scope, no partial success or decoding/repair/runtime. [Contract](artifact-reader.md), [source/static record](../architecture/cmp09-verification.md), [173 deferred scenarios](../../test-archive/CMP-09/CMP-09-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-09.
+
+## CMP-10 — IR Inspector
+
+Pure bounded read-only inspection of explicit in-memory envelope/tuple/state/phase IR, compiled-type handler only, exact immutable field/reference/constraint/origin views and optional escaped developer text. Independent result does not change compilation; unsupported payloads and selected failures expose no partial success. [Contract](ir-inspector.md), [source/static record](../architecture/cmp10-verification.md), [179 deferred scenarios](../../test-archive/CMP-10/CMP-10-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. No artifact/HTTP/runtime behavior. Stop CMP-10.
