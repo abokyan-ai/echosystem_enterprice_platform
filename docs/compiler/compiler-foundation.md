@@ -90,3 +90,7 @@ report = ModelDiagnosticReporter().report((build.diagnostic_report,), diagnostic
 This snippet was not executed. Expected future preparation outcome: SUCCEEDED for foundation-preparation only; expected artifact-build outcome: INCOMPLETE. INVALID/INCOMPLETE/unbound/different-model evidence blocks phase execution. String precision applicability remains TYPE-06's judgment, not compiler logic.
 
 See [ADR-0032](../architecture/decisions/ADR-0032-compiler-foundation.md), [static record](../architecture/cmp01-verification.md), [archive](../../test-archive/CMP-01/CMP-01-deferred-tests.md). Stop CMP-01; no CMP-02.
+
+## CMP-02 compatibility extension
+
+[Compilation diagnostics](compilation-diagnostics.md) adds optional immutable producer associations, recorded phase execution/prerequisites and lossless original occurrence guards to existing results. `.diagnostic_report` delegates to the pure reporter while preserving original status/evidence. Actual conflict key/related semantic dependencies are retained at the existing collection exception; collision algorithm and compilation objectives are unchanged. No new phase, generator, validator or source processing. Historical CMP-01 evidence remains factual; new behavior is deferred/unverified.

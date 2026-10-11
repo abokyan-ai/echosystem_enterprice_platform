@@ -143,3 +143,7 @@ Discovery and evaluation now live separately behind ArchitectureModel. The ARC-0
 ### CMP-01 observed compiler boundary
 
 Compiler-core now consumes semantic-kernel, model-core, compiled-contracts and the explicitly added model-authoring public API edge for existing validation evidence/diagnostic associations. This respects compiler -> model/contract zone direction. Compiled-contracts consumes only Kernel artifact coordinates. Model-loader remains restricted to model-authoring under its designated model-source-loading profile; compilation reports arrive through an explicit presentation contract, without importing compiler implementation. Runtime still consumes only Kernel/compiled-contracts/runtime contracts. No policy/profile relaxation, exception/suppression or activation dependency change. See [compiler foundation](../compiler/compiler-foundation.md).
+
+### CMP-02 diagnostics
+
+Compiler diagnostic reporter composes through existing compiler-core → model-authoring/model-core/compiled-contracts/Kernel public APIs. Tooling consumes only authoring-owned diagnostic projections; no model-loader → compiler-core/contracts or domain → source tooling edge. Existing runtime boundaries, manifests, profiles and activation dependencies are unchanged. General SK-11 is unavailable and must not be replaced by a new universal diagnostic type. [ADR-0033](decisions/ADR-0033-compilation-diagnostics.md).

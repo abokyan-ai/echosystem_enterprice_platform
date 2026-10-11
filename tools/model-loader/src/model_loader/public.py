@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Mapping, Protocol
 from types import MappingProxyType
+import re
 from bisect import bisect_right
 from hashlib import sha256
 from model_authoring.public import (
@@ -15,6 +16,7 @@ from model_authoring.public import (
     ModelDiagnosticEntry, ModelDiagnosticPayload, associate_model_diagnostic,
     ModelValidationStatus, CompilationReadiness, ModelValidationStageResult,
     CompilationDiagnosticReport, CompilerPhaseDiagnosticView,
+    CompilationDiagnosticOrigin, CompilationArtifactDiagnosticView,
     AuthoringSchemaValidationResult, NamespaceEnvironmentResult,
     NamespaceSymbolSnapshotResult, SemanticReferenceResolutionResult,
     SemanticReferenceBatchResult, ResolvedAuthoringInputResult,
@@ -1396,6 +1398,21 @@ class ModelDiagnosticReport:
             raise TypeError('Source filtering requires an explicit ModelSourceId.')
         return tuple(e for e in self.entries if any(t is not None and t.source_id == source_id for t in (e.source_target, *e.related_source_targets)))
 
+    def by_compilation_origin(self, origin: CompilationDiagnosticOrigin) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(origin) is not CompilationDiagnosticOrigin:
+            raise TypeError('Use the explicit compiler responsibility.')
+        return tuple(e for e in self.entries if type(e.entry) is ModelDiagnosticEntry and e.entry.compilation_details is not None and e.entry.compilation_details.origin is origin)
+
+    def by_compilation_phase(self, phase_id: str | None) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if phase_id is not None and (type(phase_id) is not str or re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', phase_id) is None):
+            raise ValueError('Use the actual compiler phase identifier or explicit absence.')
+        return tuple(e for e in self.entries if type(e.entry) is ModelDiagnosticEntry and e.entry.compilation_details is not None and e.entry.compilation_details.phase_id == phase_id)
+
+    def by_artifact_target(self, artifact: CompilationArtifactDiagnosticView) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(artifact) is not CompilationArtifactDiagnosticView:
+            raise TypeError('Artifact filtering uses the original bounded metadata projection.')
+        return tuple(e for e in self.entries if type(e.entry) is ModelDiagnosticEntry and e.entry.compilation_details is not None and e.entry.compilation_details.artifact == artifact)
+
     def group_by_origin(self) -> Mapping[ModelDiagnosticOrigin, tuple[LocatedModelDiagnosticEntry, ...]]:
         groups = {origin: [] for origin in ModelDiagnosticOrigin}
         for entry in self.entries:
@@ -1464,14 +1481,14 @@ class ModelDiagnosticReporter:
         return ModelDiagnosticReport(operations)
 
 
-def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_messages: bool = False, include_source_details: bool = False, include_semantic_targets: bool = False) -> dict[str, object]:
+def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_messages: bool = False, include_source_details: bool = False, include_semantic_targets: bool = False, include_artifact_targets: bool = False) -> dict[str, object]:
     """Explicit JSON-ready presentation, no HTTP/permission policy or repr dump.
 
     Caller uses existing authorization before opting into source/ID/text details.
     Defaults expose no arbitrary diagnostic text, source paths or semantic IDs.
     No absolute physical filename/source content/stack trace fields are emitted.
     """
-    if type(report) is not ModelDiagnosticReport or any(type(v) is not bool for v in (include_messages, include_source_details, include_semantic_targets)):
+    if type(report) is not ModelDiagnosticReport or any(type(v) is not bool for v in (include_messages, include_source_details, include_semantic_targets, include_artifact_targets)):
         raise TypeError('Transport requires the actual report and explicit disclosure booleans.')
     def location(loc: SourceLocation | None) -> dict[str, object] | None:
         if loc is None:
@@ -1495,7 +1512,15 @@ def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_me
         else:
             item['cause_codes'] = list(entry.entry.cause_codes)
             if entry.origin is ModelDiagnosticOrigin.COMPILER:
-                item['compilation_phase'] = d.phase_id
+                details = entry.entry.compilation_details
+                item['compilation_phase'] = d.phase_id if details is None else details.phase_id
+                item['compilation_origin'] = None if details is None else details.origin.value
+                if include_artifact_targets:
+                    artifact = None if details is None else details.artifact
+                    item['artifact_target'] = None if artifact is None else {'key': artifact.key, 'kind': artifact.kind, 'target': artifact.target}
+                if include_semantic_targets:
+                    scope = None if details is None else details.semantic_context
+                    item['semantic_context'] = None if scope is None else scope.context_id.value
                 if d.cause_code is not None:
                     item['cause_codes'].append(d.cause_code)
         if include_messages:
@@ -1517,8 +1542,10 @@ def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_me
             'validation_status': None if report.validation_status is None else report.validation_status.value,
             'compilation_readiness': None if report.compilation_readiness is None else report.compilation_readiness.value,
             'compilation_status': report.compilation_status,
+            'compilation_artifact_count': None if report.compilation_report is None else report.compilation_report.artifact_count,
+            'compilation_summary': None if report.compilation_report is None else {'total': report.compilation_report.summary.total, 'errors': report.compilation_report.summary.errors, 'warnings': report.compilation_report.summary.warnings, 'info': report.compilation_report.summary.info},
             'compilation_target': None if report.compilation_report is None or report.compilation_report.target is None else report.compilation_report.target,
-            'compilation_phase_outcomes': [{'phase_id': o.phase_id, 'status': o.status, **({'reason': o.reason} if include_messages else {})} for o in report.compilation_phase_outcomes],
+            'compilation_phase_outcomes': [{'phase_id': o.phase_id, 'status': o.status, 'prerequisites': list(o.prerequisites), 'executed': o.executed, **({'reason': o.reason} if include_messages else {})} for o in report.compilation_phase_outcomes],
             'operations': [{'phase': o.phase.value, 'status': o.status.value} for o in report.operations],
             'stage_outcomes': [{'stage_id': s.stage_id, 'status': s.status.value, **({'reason': s.reason} if include_messages else {})} for s in report.stage_outcomes],
             'entries': entries, 'summary': {'total': summary.total, 'errors': summary.errors, 'warnings': summary.warnings, 'info': summary.info}}
