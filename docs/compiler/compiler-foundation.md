@@ -102,3 +102,7 @@ See [ADR-0032](../architecture/decisions/ADR-0032-compiler-foundation.md), [stat
 ## CMP-04 explicit type lowering integration
 
 [Compiled Type IR](compiled-type-ir.md) adds a fixed explicitly composed EMIT_IR phase requiring actual completed executed preparation and original VALID/READY canonical binding. Caller supplies one exact definition → independent IR ID binding per selected type. Missing capability/coverage is incomplete, invalid structural association failed, and neither exposes partial IR. Default compiler composition/artifact objectives are unchanged; no target generator is installed. Historical verification retained; new behavior remains deferred/unverified.
+
+## CMP-05 — Type Compiler Pass
+
+Existing compiler-core now exposes TypeCompilerPass, reusing CMP-04 lower_payload and CMP-03 factory; old CompiledTypeLoweringPhase aliases the same implementation/stable identity. Canonical multi-version ordering, explicit request-local IDs, collision/rerun/exact-origin guards and atomic existing coordinator handoff; no partial failure output. No dependency/module/HTTP/ORM/runtime/generator additions. [Contract and unexecuted Mini Sales](type-compiler-pass.md). **129** deferred scenarios, tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-05.

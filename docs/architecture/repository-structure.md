@@ -75,3 +75,7 @@ Existing compiler-core owns explicit identity/schema/closed foundation payload/e
 ### CMP-04 concrete type payload and lowering
 
 Existing compiler-core owns compiled type/field contracts, actual constraint/reference aliases, focused gated lowerer and explicit fixed type phase/representation bindings. Existing envelope discriminated union and handoff extend explicitly; no module/dependency/profile/activation/runtime/source-tooling edge added. [Contract](../compiler/compiled-type-ir.md), [ADR-0035](decisions/ADR-0035-compiled-type-ir.md), [record](cmp04-verification.md). No target generation or API/ORM; deferred verification, stop CMP-04.
+
+## CMP-05 — Type Compiler Pass
+
+Existing compiler-core now exposes TypeCompilerPass, reusing CMP-04 lower_payload and CMP-03 factory; old CompiledTypeLoweringPhase aliases the same implementation/stable identity. Canonical multi-version ordering, explicit request-local IDs, collision/rerun/exact-origin guards and atomic existing coordinator handoff; no partial failure output. No dependency/module/HTTP/ORM/runtime/generator additions. [Contract and unexecuted Mini Sales](../compiler/type-compiler-pass.md). **129** deferred scenarios, tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-05.

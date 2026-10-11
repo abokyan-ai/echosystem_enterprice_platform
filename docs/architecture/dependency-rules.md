@@ -155,3 +155,7 @@ Semantic IR envelope/payload/handoff stay compiler-local using existing Kernel/m
 ### CMP-04 type lowering
 
 Compiled type IR reuses existing compiler-core → model-core/Kernel/authoring public contracts. No source tooling, registry resolution, Django/DRF, ORM or runtime import added. Type references/constraints remain semantic immutable values; envelope stays compiler-internal. No manifest/profile/activation exception, dynamic payload registry or target generator. [ADR-0035](decisions/ADR-0035-compiled-type-ir.md).
+
+## CMP-05 — Type Compiler Pass
+
+Existing compiler-core now exposes TypeCompilerPass, reusing CMP-04 lower_payload and CMP-03 factory; old CompiledTypeLoweringPhase aliases the same implementation/stable identity. Canonical multi-version ordering, explicit request-local IDs, collision/rerun/exact-origin guards and atomic existing coordinator handoff; no partial failure output. No dependency/module/HTTP/ORM/runtime/generator additions. [Contract and unexecuted Mini Sales](../compiler/type-compiler-pass.md). **129** deferred scenarios, tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-05.
