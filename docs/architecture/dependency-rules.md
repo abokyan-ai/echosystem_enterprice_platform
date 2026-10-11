@@ -195,3 +195,7 @@ New `apps/semantic-instance-runtime` composes public Kernel/model-core/compiled-
 ## RUN-04 ownership
 
 RuntimeValidator and RUN-03 integration remain inside existing `apps/semantic-instance-runtime`, using the same four governed public dependencies. Single original-schema resolver and single authoritative field-value engine; runtime-core receives no model edge and TYPE-06 receives no runtime import. No parser/compiler/load/canonicalizer/ORM/framework/persistence/action dependency or policy exception added. Trusted explicit ports express unavailable owner integrations, not actual approved schema/evaluator implementations. See [ADR-0045](decisions/ADR-0045-runtime-validation.md).
+
+## RUN-05 execution ownership
+
+ExecutionContext/Factory and operational identity/evidence/derivation contracts reside in existing runtime-core.public, reusing only Kernel/compiled-contracts and actual RUN-02 scope/snapshot/definition within same module. No model/compiler/application/framework edge or RUN-03/04 reverse dependency. Pure owner-verification port reflects genuine established evidence; no policy/identity provider/executor approval implied. No graph/policy exception, activation change or global context. See [ADR-0046](decisions/ADR-0046-execution-context.md).
