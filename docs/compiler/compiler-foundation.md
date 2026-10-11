@@ -94,3 +94,7 @@ See [ADR-0032](../architecture/decisions/ADR-0032-compiler-foundation.md), [stat
 ## CMP-02 compatibility extension
 
 [Compilation diagnostics](compilation-diagnostics.md) adds optional immutable producer associations, recorded phase execution/prerequisites and lossless original occurrence guards to existing results. `.diagnostic_report` delegates to the pure reporter while preserving original status/evidence. Actual conflict key/related semantic dependencies are retained at the existing collection exception; collision algorithm and compilation objectives are unchanged. No new phase, generator, validator or source processing. Historical CMP-01 evidence remains factual; new behavior is deferred/unverified.
+
+## CMP-03 compatible internal state extension
+
+[Semantic IR Envelope](semantic-ir-envelope.md) adds trailing IR envelope tuples to phase result/state and original outcomes to state. Future explicit EMIT_IR producers commit typed candidates only after original-input/context/phase/duplicate checks; consumers require actual committed membership and completed executed prerequisite evidence. Existing phase execute interface is unchanged. IR does not satisfy artifact output readiness; no default producer/lowering installed. New behavior is deferred/unverified; preserve historical CMP-01 evidence.

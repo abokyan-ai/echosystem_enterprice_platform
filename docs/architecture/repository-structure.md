@@ -67,3 +67,7 @@ Existing `compiler-core` owns pure compiler input/context/phases/local state/coo
 ### CMP-02 diagnostic composition
 
 Existing compiler-core owns immutable diagnostic association/wrapper/reporter; existing model-authoring owns narrow MOD-09 presentation details/summary and extends its existing compilation report; model-loader retains source indexes/enrichment and explicit transport through its approved inward edge. No new module/dependency/profile/API/ORM or generator. [Contract](../compiler/compilation-diagnostics.md), [ADR-0033](decisions/ADR-0033-compilation-diagnostics.md), [record](cmp02-verification.md). SK-11 remains absent, 137 cases deferred, stop CMP-02.
+
+### CMP-03 intermediate envelope boundary
+
+Existing compiler-core owns explicit identity/schema/closed foundation payload/envelope/input association/factory/handoff and minimal trailing phase state/result extensions. Authoring/tooling only add optional bounded IR diagnostic token presentation through existing inward edges. No new module/profile/dependency/runtime exposure, domain source import, generator or endpoint. [Contract](../compiler/semantic-ir-envelope.md), [ADR-0034](decisions/ADR-0034-semantic-ir-envelope.md), [record](cmp03-verification.md). Original request/phase association is trusted in-process; test execution deferred, stop CMP-03.
