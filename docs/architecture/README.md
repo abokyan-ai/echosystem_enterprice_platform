@@ -38,3 +38,7 @@ ARC-05: [CLI usage and extension](../developer/cli.md), [ADR-0007](decisions/ADR
 
 
 SK-01: [SemanticElementId](../kernel/semantic-element-id.md), [ADR-0008](decisions/ADR-0008-semantic-element-identity.md). The existing Kernel owns the pure identity; serializer mapping remains outside Kernel production code.
+
+### RUN-01 runtime boundary
+
+Existing `runtime-core` now owns pure requests/authority/decoder ports, bounded loading, typed immutable inactive output and structured diagnostics, still importing only Kernel/compiled-contracts. Shared contracts add optional producer-owned encoding/runtime declarations without approving a format. New `tools/runtime-artifact-loader` module explicitly composes only compiler-core/runtime-core public APIs under constrained tooling profile `runtime-artifact-loading`, retaining actual CMP-07/08/09 evidence and invoking the existing reader once. No runtime-to-compiler edge, private import, zone relaxation, exception, framework/HTTP/ORM/activation or real producer/decoder/auth integration. [Contract](../runtime/runtime-artifact-loader.md), [ADR-0042](decisions/ADR-0042-runtime-artifact-loader.md), [188 deferred cases](../../test-archive/RUN-01/RUN-01-deferred-tests.md), [static record](run01-verification.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**; stop RUN-01.

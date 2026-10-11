@@ -99,3 +99,7 @@ Pure read contracts and preflight in compiler-core; separate read-only LocalFile
 ### CMP-10 IR Inspector
 
 Pure contracts and service in existing compiler-core public API; no package/config/adapter changes. Explicit actual IR sources and typed immutable projections, optional bounded developer text. [Contract](../compiler/ir-inspector.md), [source/static record](cmp10-verification.md), [sole archive](../../test-archive/CMP-10/CMP-10-deferred-tests.md). No tests/demos/runtime/filesystem.
+
+### RUN-01 — Owned runtime loading composition
+
+Existing `runtime-core` now owns pure requests/authority/decoder ports, bounded loading, typed immutable inactive output and structured diagnostics, still importing only Kernel/compiled-contracts. Shared contracts add optional producer-owned encoding/runtime declarations without approving a format. New `tools/runtime-artifact-loader` module explicitly composes only compiler-core/runtime-core public APIs under constrained tooling profile `runtime-artifact-loading`, retaining actual CMP-07/08/09 evidence and invoking the existing reader once. No runtime-to-compiler edge, private import, zone relaxation, exception, framework/HTTP/ORM/activation or real producer/decoder/auth integration. [Contract](../runtime/runtime-artifact-loader.md), [ADR-0042](decisions/ADR-0042-runtime-artifact-loader.md), [188 deferred cases](../../test-archive/RUN-01/RUN-01-deferred-tests.md), [static record](run01-verification.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**; stop RUN-01.

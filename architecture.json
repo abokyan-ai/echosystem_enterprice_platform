@@ -218,6 +218,28 @@
       "external_dependencies": [],
       "technology_profile": "artifact-materialization",
       "activation_dependencies": []
+    },
+    {
+      "name": "runtime-artifact-loader",
+      "path": "tools/runtime-artifact-loader",
+      "package": "runtime_artifact_loader",
+      "zone": "tooling",
+      "owner": "runtime loading composition maintainers",
+      "language": "python",
+      "public_api": [
+        "runtime_artifact_loader.public"
+      ],
+      "allowed_dependencies": [
+        "compiler-core",
+        "runtime-core"
+      ],
+      "dependency_categories": {
+        "compiler-core": "api",
+        "runtime-core": "api"
+      },
+      "external_dependencies": [],
+      "technology_profile": "runtime-artifact-loading",
+      "activation_dependencies": []
     }
   ]
 }

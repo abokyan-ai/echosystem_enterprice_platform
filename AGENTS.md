@@ -22,3 +22,5 @@ Task-specific exception: the latest CMP-08 attachment, section 37, explicitly re
 Task-specific exception: latest CMP-09 attachment section 45 requires exactly `test-archive/CMP-09/CMP-09-deferred-tests.md` and prohibits README/additional archive files. Honor this more recent rule for CMP-09 only; test deferral and stop-after-task requirements remain mandatory.
 
 Task-specific exception: latest CMP-10 attachment section 41 requires exactly `test-archive/CMP-10/CMP-10-deferred-tests.md`, prohibits an archive README/test scaffolding and supersedes generic archive layout for CMP-10 only. Tests stay deferred; stop after CMP-10 without starting CMP-11.
+
+Task-specific exception: latest RUN-01 attachment section 46 requires exactly `test-archive/RUN-01/RUN-01-deferred-tests.md`, prohibits extra archive Markdown/README and executable tests or manual load/reader/decoder experiments. Honor that archive layout for RUN-01 only; static syntax/architecture inspection remains separate from behavioral verification. Stop after RUN-01; do not start RUN-02.
