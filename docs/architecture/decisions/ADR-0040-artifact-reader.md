@@ -1,0 +1,17 @@
+# ADR-0040 — Bounded manifest/receipt-driven read-only artifact retrieval
+
+Date: 2026-10-11. Task: CMP-09. Implemented decision; behavior **DEFERRED / NOT VERIFIED**.
+
+Reuse original CMP-07 RuntimeArtifactManifest and CMP-08 ArtifactMaterializationReceipt/MaterializedArtifact/ArtifactRelativeLocation/ArtifactContentDigest. Alias ArtifactReadSource to the existing logical ArtifactWriteDestination rather than inventing an alternate path/locator/receipt. Require receipt exact declaration, original compilation association object, full ordered membership and destination agreement. Captured original VALID/READY evidence remains mandatory; no current compilation/configuration execution or semantic validation to read historical artifacts.
+
+Keep immutable reader requests/selections/policies/plans/verification/retrieved bytes/results and preflight in compiler-core. Reuse the existing tools/artifact-writer approved-root configuration and Linux infrastructure boundary with a separate LocalFilesystemArtifactReader class and read-only functions. No writer calls, neutral capability changes, new module/exception/runtime edge or storage-manager behavior. Existing public compiler dependency and tooling profile suffice. No applicable Django/DRF HTTP API exists or framework dependency is installed; no endpoint/ORM/migration/authorization changes.
+
+Support ONE/nonempty distinct explicit SET/ALL selections by stable artifact key, manifest ordering, no implicit dependencies or filename fallback. Effective server-bounded maxima default 32 MiB/artifact, 128 MiB aggregate, 128 artifacts. Limits cannot be raised or server integrity lowered by caller settings. SIZE and DIGEST evidence are distinct; available declared SHA-256 always reverified, missing mandatory digest INCOMPLETE. No fresh digests or decoder.
+
+Open approved controlled Linux roots/output via no-follow directory fds and selected receipt filenames via read-only nonblocking/no-follow/no-atime handles. Reject special types/links/unsafe ownership; bounded chunk reads/one-byte probe; initial/actual length checks, metadata/name-binding race checks and declared digest comparison. Preserve bytes exactly and return immutable independent RetrievedArtifact records.
+
+Expose successful payloads only if every selected entry passed, and retain selection plan/ALL-only complete_set marker. Failed/incomplete reads expose no partial artifacts; handle-close failures block success and retain primary diagnostics. Result atomicity does not imply a cross-file snapshot, universal race detection, current directory exclusivity, authentication or authority. No directory enumeration/repair/write/publication/runtime behavior.
+
+Reuse CMP-02 code family CMP-062..080 and trailing read-stage/local-source associations, existing artifact/manifest/context/safe relative location, with CMP-06 comparison support. Do not leak raw OS errors/absolute roots. Current proof remains trusted in-process, real producers absent, size-only insufficient against same-size corruption, remote/other OS unsupported and same-UID/privileged actors outside isolation. Finite byte limits do not promise exact RSS/latency.
+
+[Reader contract](../../compiler/artifact-reader.md), [173 deferred scenarios](../../../test-archive/CMP-09/CMP-09-deferred-tests.md), tests created/executed **0**. Latest task section 45 overrides generic archive README layout only for CMP-09. No read/write experiments or automated verification. Stop after CMP-09.

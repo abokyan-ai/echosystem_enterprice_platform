@@ -118,3 +118,7 @@ Shared compiled-contracts owns immutable artifact origins/dependencies/descripto
 ## CMP-08 — Artifact Writer
 
 Pure writer contracts/preflight/plan/result/receipt reuse original CMP-01 result and CMP-07 assembly; exact approved byte fields only. Secure Linux filesystem materialization is owned by separate constrained `tools/artifact-writer`, never imported by compiler. FAIL_IF_EXISTS complete-directory NOREPLACE commit, explicit synchronization and owned cleanup. [Contract](artifact-writer.md), [static record](../architecture/cmp08-verification.md), [158 deferred cases](../../test-archive/CMP-08/CMP-08-deferred-tests.md). Tests implemented/executed 0; **DEFERRED / NOT VERIFIED**. No generator/publication/API/runtime additions. Stop CMP-08.
+
+## CMP-09 — Artifact Reader
+
+Pure manifest/receipt/selection/limits/verification contracts and planning plus an independent read-only Linux adapter in existing tooling. Stable artifact identities resolve actual receipt locations; bounded exact bytes/length/digest, explicit selected scope, no partial success or decoding/repair/runtime. [Contract](artifact-reader.md), [source/static record](../architecture/cmp09-verification.md), [173 deferred scenarios](../../test-archive/CMP-09/CMP-09-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-09.

@@ -69,3 +69,7 @@ Shared compiled-contracts owns immutable artifact origins/dependencies/descripto
 ## CMP-08 output plan determinism
 
 Existing artifact-key order, exact producer bytes, identical descriptor/layout/destination semantics give equivalent committed relative layout. Input source order does not change output order. Explicit complete key/kind mappings or validated kind__key.bin; no time/PID/random committed paths. Private staging randomness is not output identity. Diagnostic equivalence includes typed write-stage/location. FAIL_IF_EXISTS repetition is a conflict, not a successful idempotent replay. No universal byte reproducibility/encoding/payload equality is inferred. [Writer contract](artifact-writer.md), [deferred archive](../../test-archive/CMP-08/CMP-08-deferred-tests.md).
+
+## CMP-09 deterministic selected reads
+
+Same accepted manifest/receipt/source/effective policy and unchanged stored bytes give equivalent selected content/evidence in manifest key order. Explicit key input order does not drive results, no directory enumeration/time/random/cache ordering. Sequential first failure defines diagnostics, including read stage/source in semantic comparison. Atomic exposed result is not a filesystem snapshot; ALL verifies declared artifacts, not current directory exclusivity. [Reader contract](artifact-reader.md), [173 deferred scenarios](../../test-archive/CMP-09/CMP-09-deferred-tests.md).

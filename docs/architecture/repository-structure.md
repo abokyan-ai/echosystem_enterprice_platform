@@ -91,3 +91,7 @@ Shared compiled-contracts owns immutable artifact origins/dependencies/descripto
 ### CMP-08 Artifact Writer
 
 `tools/artifact-writer/src/artifact_writer/public.py` owns trusted root configuration and the secure Linux filesystem adapter. `platform/compiler/compiler-core/src/compiler_core/public.py` retains pure writer domain/application contracts and planning. The tooling module/profile declares only compiler-core public API dependency. [Static/source record](cmp08-verification.md), [contract](../compiler/artifact-writer.md), [sole deferred archive](../../test-archive/CMP-08/CMP-08-deferred-tests.md). No executable tests, producer or runtime/API changes.
+
+### CMP-09 Artifact Reader
+
+Pure read contracts and preflight in compiler-core; separate read-only LocalFilesystemArtifactReader reuses `tools/artifact-writer` public root configuration and existing Linux boundary. No second root/receipt/layout/module hierarchy. [Contract](../compiler/artifact-reader.md), [source/static record](cmp09-verification.md), [sole deferred archive](../../test-archive/CMP-09/CMP-09-deferred-tests.md). No automated tests or read/write experiments.

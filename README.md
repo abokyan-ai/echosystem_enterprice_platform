@@ -224,3 +224,7 @@ Shared compiled-contracts owns immutable artifact origins/dependencies/descripto
 ### CMP-08 — Artifact Writer
 
 Pure original-result/manifest/byte-source contracts and deterministic plan, plus separate tooling-owned secure Linux filesystem writer with private staging, exact integrity checks, exclusive whole-directory commit, explicit synchronization policy and immutable receipt. [Contract](docs/compiler/artifact-writer.md) · [Source/static record](docs/architecture/cmp08-verification.md) · [158 deferred scenarios](test-archive/CMP-08/CMP-08-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. No real final byte producer exists yet; Type IR is not written as runtime artifacts. No publication/deployment/HTTP endpoint. Stop after CMP-08.
+
+### CMP-09 — Artifact Reader
+
+Manifest/receipt-driven identity selections, trusted root resolution, server-bounded read limits, safe Linux regular-file access, exact bytes/length/declared-digest verification and atomic immutable selected results. Separate reader in existing tooling, no repair/decoder/runtime/API. [Contract](docs/compiler/artifact-reader.md) · [Source/static record](docs/architecture/cmp09-verification.md) · [173 deferred scenarios](test-archive/CMP-09/CMP-09-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Actual final producer/receipt prerequisite absent; Mini Sales is conceptual only. Stop CMP-09.

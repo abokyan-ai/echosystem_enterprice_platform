@@ -65,3 +65,7 @@ A future approved target can produce original Customer/Employee artifacts with e
 ## Deferred verification
 
 [The sole detailed archive](../../test-archive/CMP-08/CMP-08-deferred-tests.md) has **158** scenarios covering all requested positive/negative/collision/security/failure/concurrency/integrity/durability/edge/framework/Mini Sales/boundary cases. Tests implemented/executed **0**. No producer fixture, automated test, scenario script, smoke materialization or CLI/runtime execution is introduced. Syntax/build/architecture/import checks are separate and cannot establish behavioral correctness.
+
+## CMP-09 compatible reader
+
+[Artifact Reader](artifact-reader.md) reuses the actual receipt, logical destination/source, approved root configuration, safe relative filename and optional declared digest contracts. Separate read-only adapter in the existing tooling module, no writer invocation or layout remapping. Manifest-order bounded selections, current length/digest checks and atomic exposed read results; no snapshot/directory-exclusivity/authentication claim. Tests deferred, not verified.
