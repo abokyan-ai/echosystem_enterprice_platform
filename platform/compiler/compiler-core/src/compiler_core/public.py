@@ -5,8 +5,10 @@ from enum import Enum
 from typing import Protocol, Mapping
 from types import MappingProxyType
 import re
-from semantic_kernel.public import SemanticContextRef, SemanticElementId, ElementVersionRef, SemanticVersion
-from model_core.public import CanonicalModel, TypeValidationSeverity
+from semantic_kernel.public import SemanticContextRef, SemanticElementId, ElementVersionRef, SemanticVersion, QualifiedName, PrimitiveType, ElementRef, SemanticElementKinds
+from model_core.public import (CanonicalModel, TypeValidationSeverity, TypeDataComposition,
+    FieldId, FieldName, FieldDefinition, FieldConstraintSet, DataFacet, DataFacetError,
+    PrimitiveTypeRef, SemanticTypeRef, TypeRef)
 from model_authoring.public import (
     ModelValidationResult, ModelValidationStatus, CompilationReadiness,
     CanonicalSourceAssociation, ModelDiagnosticContext, ModelDiagnosticEntry,
@@ -73,6 +75,14 @@ class CompilationFailure(Enum):
     IR_MISSING_PAYLOAD = 'CMP-018'
     IR_INCOMPATIBLE_HANDOFF = 'CMP-019'
     IR_DUPLICATE_IDENTITY = 'CMP-020'
+    TYPE_IR_UNSUPPORTED_DEFINITION = 'CMP-021'
+    TYPE_IR_MISSING_DATA_FACET = 'CMP-022'
+    TYPE_IR_INVALID_FIELD = 'CMP-023'
+    TYPE_IR_UNSUPPORTED_REFERENCE = 'CMP-024'
+    TYPE_IR_UNSUPPORTED_CONSTRAINT = 'CMP-025'
+    TYPE_IR_INPUT_MISMATCH = 'CMP-026'
+    TYPE_IR_IDENTITY_COVERAGE = 'CMP-027'
+    TYPE_IR_INVALID_PAYLOAD = 'CMP-028'
 
 
 def _phase_id(value: str) -> None:
@@ -556,6 +566,14 @@ _LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({
     CompilationFailure.IR_MISSING_PAYLOAD: CompilationDiagnosticOrigin.ORCHESTRATOR,
     CompilationFailure.IR_INCOMPATIBLE_HANDOFF: CompilationDiagnosticOrigin.ORCHESTRATOR,
     CompilationFailure.IR_DUPLICATE_IDENTITY: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.TYPE_IR_UNSUPPORTED_DEFINITION: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_MISSING_DATA_FACET: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_INVALID_FIELD: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_UNSUPPORTED_REFERENCE: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_UNSUPPORTED_CONSTRAINT: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_INPUT_MISMATCH: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_IDENTITY_COVERAGE: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.TYPE_IR_INVALID_PAYLOAD: CompilationDiagnosticOrigin.PHASE,
 })
 
 
@@ -695,6 +713,7 @@ class SemanticIRSchemaVersion(Enum):
 
 class SemanticIRPayloadKind(Enum):
     FOUNDATION_COORDINATES = 'foundation-coordinates'
+    COMPILED_TYPE_IR = 'compiled-type-ir'
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,8 +734,58 @@ class SemanticIRFoundationPayload:
         return SemanticIRPayloadKind.FOUNDATION_COORDINATES
 
 
-# Closed v0 payload type; future extensions must add explicitly owned immutable contracts.
-SemanticIRPayload = SemanticIRFoundationPayload
+# Reuse existing closed immutable references/constraints without redundant wrappers.
+CompiledTypeReferenceIR = TypeRef
+CompiledFieldConstraintsIR = FieldConstraintSet
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledFieldIR:
+    id: FieldId
+    name: FieldName
+    type: CompiledTypeReferenceIR
+    constraints: CompiledFieldConstraintsIR
+
+    def __post_init__(self) -> None:
+        if type(self.id) is not FieldId or type(self.name) is not FieldName:
+            _ir_reject(CompilationFailure.TYPE_IR_INVALID_FIELD, 'Compiled field retains exact owned FieldId and FieldName values.')
+        if type(self.type) not in (PrimitiveTypeRef, SemanticTypeRef):
+            _ir_reject(CompilationFailure.TYPE_IR_UNSUPPORTED_REFERENCE, 'Compiled field uses only the two approved TYPE-05 reference variants.')
+        if type(self.type) is PrimitiveTypeRef and type(self.type.primitive) is not PrimitiveType or type(self.type) is SemanticTypeRef and (type(self.type.target) is not ElementRef or type(self.type.target.element_id) is not SemanticElementId):
+            _ir_reject(CompilationFailure.TYPE_IR_UNSUPPORTED_REFERENCE, 'Compiled reference retains actual immutable Kernel primitive or identity-only element reference.')
+        if type(self.constraints) is not FieldConstraintSet:
+            _ir_reject(CompilationFailure.TYPE_IR_UNSUPPORTED_CONSTRAINT, 'Compiled constraints reuse the closed immutable TYPE-04 contract.')
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTypeIR:
+    type_identity: ElementVersionRef
+    qualified_name: QualifiedName
+    semantic_context: SemanticContextRef
+    fields: tuple[CompiledFieldIR, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.type_identity) is not ElementVersionRef or type(self.type_identity.element_id) is not SemanticElementId or type(self.type_identity.version) is not SemanticVersion or type(self.qualified_name) is not QualifiedName or type(self.semantic_context) is not SemanticContextRef or type(self.semantic_context.context_id) is not SemanticElementId:
+            _ir_reject(CompilationFailure.TYPE_IR_INVALID_PAYLOAD, 'Compiled type requires exact source identity/version, qualified name and semantic scope.')
+        if type(self.fields) not in (tuple, list) or any(type(f) is not CompiledFieldIR for f in self.fields):
+            _ir_reject(CompilationFailure.TYPE_IR_INVALID_FIELD, 'Compiled type fields require an explicit ordered immutable snapshot sequence.', reference=self.type_identity)
+        fields = tuple(self.fields)
+        # Reuse DataFacet intrinsic uniqueness/portability guarantees, never TYPE-06 applicability rules.
+        try:
+            DataFacet(tuple(FieldDefinition(f.id, f.name, f.type, f.constraints) for f in fields))
+        except DataFacetError as failure:
+            association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ORCHESTRATOR, semantic_target=ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, self.type_identity))
+            diagnostic = CompilationDiagnostic(CompilationFailure.TYPE_IR_INVALID_FIELD, 'Compiled field collection violates existing intrinsic DataFacet membership.', TypeValidationSeverity.ERROR, reference=self.type_identity, cause_code=failure.code, association=association)
+            raise SemanticIREnvelopeError((diagnostic,)) from failure
+        object.__setattr__(self, 'fields', fields)
+
+    @property
+    def kind(self) -> SemanticIRPayloadKind:
+        return SemanticIRPayloadKind.COMPILED_TYPE_IR
+
+
+# Explicit closed extension; no plugin registry or arbitrary immutable implementation.
+SemanticIRPayload = SemanticIRFoundationPayload | CompiledTypeIR
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -768,20 +837,30 @@ class SemanticIREnvelope:
         request = self.canonical_input.request
         if self.semantic_context != request.context.scope:
             _ir_reject(CompilationFailure.IR_CONTEXT_MISMATCH, 'IR scope differs from its declared canonical input.', identity=identity, scope=self.semantic_context)
-        if self.payload_kind is not SemanticIRPayloadKind.FOUNDATION_COORDINATES:
-            _ir_reject(CompilationFailure.IR_UNSUPPORTED_KIND, 'Only the explicit foundation-coordinate payload contract is supported.', identity=identity)
+        if type(self.payload_kind) is not SemanticIRPayloadKind:
+            _ir_reject(CompilationFailure.IR_UNSUPPORTED_KIND, 'IR kind must be an explicitly supported discriminator.', identity=identity)
         if self.payload is None:
             _ir_reject(CompilationFailure.IR_MISSING_PAYLOAD, 'Mandatory IR payload cannot be absent.', identity=identity)
-        if type(self.payload) is not SemanticIRFoundationPayload:
+        expected_payload = SemanticIRFoundationPayload if self.payload_kind is SemanticIRPayloadKind.FOUNDATION_COORDINATES else CompiledTypeIR
+        if type(self.payload) is not expected_payload:
             _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'IR does not accept mutable bags, arbitrary implementations or artifact payloads.', identity=identity)
         if type(self.model_wide) is not bool or type(self.definition_origins) not in (tuple, list) or any(type(r) is not ElementVersionRef or type(r.element_id) is not SemanticElementId or type(r.version) is not SemanticVersion for r in self.definition_origins):
             _ir_reject(CompilationFailure.IR_INVALID_ENVELOPE, 'Origins require explicit exact references and a boolean model-wide declaration.', identity=identity)
         origins = tuple(self.definition_origins)
-        if len(set(origins)) != len(origins) or not origins and not self.model_wide or origins != self.payload.definitions:
-            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Foundation coordinates must match ordered exact origins; empty origins require explicit model-wide scope.', identity=identity)
+        if len(set(origins)) != len(origins) or not origins and not self.model_wide:
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Origins cannot repeat and absent origins require explicit model-wide scope.', identity=identity)
+        if self.payload_kind is SemanticIRPayloadKind.FOUNDATION_COORDINATES:
+            if origins != self.payload.definitions:
+                _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Foundation payload retains the exact ordered origin coordinates.', identity=identity)
+        elif self.model_wide or origins != (self.payload.type_identity,) or self.payload.semantic_context != self.semantic_context:
+            _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Compiled type payload requires one exact source origin and matching scope.', identity=identity)
         for reference in origins:
             if not request.canonical_model.contains(reference):
                 _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'IR origin is outside its exact canonical snapshot.', identity=identity, reference=reference)
+        if self.payload_kind is SemanticIRPayloadKind.COMPILED_TYPE_IR:
+            definition = request.canonical_model.find(self.payload.type_identity)
+            if definition.data is None or definition.type_definition.qualified_name != self.payload.qualified_name or len(definition.data.fields) != len(self.payload.fields) or any((f.id, f.name, f.type, f.constraints) != (original.id, original.name, original.type, original.constraints) for f, original in zip(self.payload.fields, definition.data.fields)):
+                _ir_reject(CompilationFailure.IR_INPUT_MISMATCH, 'Compiled payload must preserve the exact original canonical data structure and name.', identity=identity, reference=self.payload.type_identity)
         if self.produced_by_phase is not None and (type(self.produced_by_phase) is not str or re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', self.produced_by_phase) is None):
             _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Optional candidate producer uses an existing compiler phase identifier.', identity=identity)
         if type(self.source_associations) not in (tuple, list) or any(type(a) is not CanonicalSourceAssociation for a in self.source_associations):
@@ -847,7 +926,7 @@ class SemanticIRHandoff:
         _ir_current(envelope, request, consumer.id)
         if required_schema is not SemanticIRSchemaVersion.V0 or envelope.schema_version is not required_schema:
             _ir_reject(CompilationFailure.IR_UNSUPPORTED_SCHEMA, 'Consumer requires an unsupported or mismatched envelope schema.', identity=envelope.identity, phase_id=consumer.id)
-        if required_kind is not SemanticIRPayloadKind.FOUNDATION_COORDINATES:
+        if type(required_kind) is not SemanticIRPayloadKind:
             _ir_reject(CompilationFailure.IR_UNSUPPORTED_KIND, 'Consumer payload contract is not implemented.', identity=envelope.identity, phase_id=consumer.id)
         if envelope.payload_kind is not required_kind:
             _ir_reject(CompilationFailure.IR_PAYLOAD_MISMATCH, 'Consumer does not accept the supplied IR payload contract.', identity=envelope.identity, phase_id=consumer.id)
@@ -864,3 +943,128 @@ class SemanticIRHandoff:
 __all__ += ['SemanticIREnvelopeError', 'SemanticIRId', 'SemanticIRSchemaVersion',
             'SemanticIRPayloadKind', 'SemanticIRFoundationPayload', 'SemanticIRPayload',
             'SemanticIRCanonicalInput', 'SemanticIREnvelope', 'SemanticIREnvelopeFactory', 'SemanticIRHandoff']
+
+
+COMPILED_TYPE_IR_PHASE = CompilationPhaseDescriptor(
+    'CMP-PHASE-COMPILED-TYPE-IR', ('CMP-PHASE-PREPARE',),
+    frozenset({CompilationCapability.EMIT_IR}), frozenset({PREPARATION_TARGET, BUILD_TARGET}),
+)
+
+# Reuse the existing atomic phase result, with successful payload carried in its envelope.
+TypeLoweringResult = CompilationPhaseResult
+
+
+def _type_ir_gate(request: CompilationRequest, state: CompilationState) -> SemanticIRCanonicalInput:
+    if type(request) is not CompilationRequest or type(state) is not CompilationState:
+        raise TypeError('Type lowering requires actual compiler request and state, never Boolean validation flags.')
+    canonical_input = SemanticIRCanonicalInput(request)
+    preparation = state.preparation
+    outcome = next((o for o in state.phase_outcomes if o.descriptor.id == 'CMP-PHASE-PREPARE'), None)
+    if preparation is None or preparation.model is not request.canonical_model or preparation.context != request.context or outcome is None or outcome.status is not CompilationPhaseStatus.COMPLETED or outcome.executed is not True or CompilationCapability.PREPARE not in outcome.descriptor.capabilities:
+        _ir_reject(CompilationFailure.TYPE_IR_INPUT_MISMATCH, 'Type lowering requires matching accepted preparation and original executed mandatory phase evidence.', phase_id=COMPILED_TYPE_IR_PHASE.id, scope=request.context.scope)
+    return canonical_input
+
+
+def _type_ir_diagnostic(code: CompilationFailure, message: str, *, reference: ElementVersionRef | None = None, field_id: FieldId | None = None, severity: TypeValidationSeverity = TypeValidationSeverity.ERROR, cause_code: str | None = None, identity: SemanticIRId | None = None) -> CompilationDiagnostic:
+    target = None if reference is None else ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION if field_id is None else ModelDiagnosticTargetKind.FIELD, reference, field_id)
+    association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.PHASE, COMPILED_TYPE_IR_PHASE.id, semantic_target=target, ir_identity=identity)
+    return CompilationDiagnostic(code, message, severity, COMPILED_TYPE_IR_PHASE.id, reference, cause_code, association)
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTypeLowerer:
+    def lower(self, definition: TypeDataComposition, *, request: CompilationRequest, state: CompilationState, identity: SemanticIRId) -> TypeLoweringResult:
+        try:
+            canonical_input = _type_ir_gate(request, state)
+        except SemanticIREnvelopeError as failure:
+            return failure.phase_failure(COMPILED_TYPE_IR_PHASE.id)
+        if type(identity) is not SemanticIRId:
+            diagnostic = _type_ir_diagnostic(CompilationFailure.IR_INVALID_IDENTITY, 'Type lowering requires an explicit representation identity.')
+            return CompilationPhaseResult(CompilationPhaseStatus.FAILED, (diagnostic,), reason='Invalid IR identity.')
+        if type(definition) is not TypeDataComposition:
+            diagnostic = _type_ir_diagnostic(CompilationFailure.TYPE_IR_UNSUPPORTED_DEFINITION, 'Only the existing canonical type/data composition is supported.', severity=TypeValidationSeverity.WARNING, identity=identity)
+            return CompilationPhaseResult(CompilationPhaseStatus.INCOMPLETE, (diagnostic,), reason='Unsupported definition capability.')
+        host = definition.type_definition
+        reference = ElementVersionRef(host.id, host.version)
+        if request.canonical_model.find(reference) is not definition or host.context != request.context.scope:
+            diagnostic = _type_ir_diagnostic(CompilationFailure.TYPE_IR_INPUT_MISMATCH, 'Type must be the original exact member of the accepted canonical snapshot.', reference=reference, identity=identity)
+            return CompilationPhaseResult(CompilationPhaseStatus.FAILED, (diagnostic,), reason='Canonical type association mismatch.')
+        if host.kind != SemanticElementKinds.TYPE_DEFINITION:
+            diagnostic = _type_ir_diagnostic(CompilationFailure.TYPE_IR_UNSUPPORTED_DEFINITION, 'Non-type semantic kinds have no compiled type lowering capability.', reference=reference, severity=TypeValidationSeverity.WARNING, identity=identity)
+            return CompilationPhaseResult(CompilationPhaseStatus.INCOMPLETE, (diagnostic,), reason='Unsupported semantic kind.')
+        if definition.data is None:
+            diagnostic = _type_ir_diagnostic(CompilationFailure.TYPE_IR_MISSING_DATA_FACET, 'Absent DataFacet has no v0 structural type lowering capability; no empty facet is fabricated.', reference=reference, severity=TypeValidationSeverity.WARNING, identity=identity)
+            return CompilationPhaseResult(CompilationPhaseStatus.INCOMPLETE, (diagnostic,), reason='DataFacet capability unavailable.')
+        fields = []
+        diagnostics = []
+        for field_definition in definition.data.fields:
+            try:
+                fields.append(CompiledFieldIR(field_definition.id, field_definition.name, field_definition.type, field_definition.constraints))
+            except SemanticIREnvelopeError as failure:
+                for diagnostic in failure.diagnostics:
+                    diagnostics.append(_type_ir_diagnostic(diagnostic.code, diagnostic.message, reference=reference, field_id=field_definition.id, cause_code=diagnostic.cause_code, identity=identity))
+        if diagnostics:
+            return CompilationPhaseResult(CompilationPhaseStatus.FAILED, tuple(diagnostics), reason='Mandatory field lowering rejected atomically.')
+        try:
+            payload = CompiledTypeIR(reference, host.qualified_name, host.context, tuple(fields))
+            sources = tuple(a for a in request.source_associations if a.target.definition == reference)
+            envelope = SemanticIREnvelopeFactory().create(identity=identity, schema_version=SemanticIRSchemaVersion.V0, canonical_input=canonical_input, semantic_context=request.context.scope, payload_kind=SemanticIRPayloadKind.COMPILED_TYPE_IR, payload=payload, definition_origins=(reference,), produced_by_phase=COMPILED_TYPE_IR_PHASE.id, source_associations=sources)
+        except SemanticIREnvelopeError as failure:
+            return failure.phase_failure(COMPILED_TYPE_IR_PHASE.id)
+        return CompilationPhaseResult(CompilationPhaseStatus.COMPLETED, ir_envelopes=(envelope,))
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTypeIRIdentityBinding:
+    definition: ElementVersionRef
+    identity: SemanticIRId
+
+    def __post_init__(self) -> None:
+        if type(self.definition) is not ElementVersionRef or type(self.definition.element_id) is not SemanticElementId or type(self.definition.version) is not SemanticVersion or type(self.identity) is not SemanticIRId:
+            raise TypeError('Representation assignment binds an explicit exact source coordinate to an existing IR token.')
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledTypeLoweringPhase:
+    identities: tuple[CompiledTypeIRIdentityBinding, ...]
+    descriptor: CompilationPhaseDescriptor = field(default=COMPILED_TYPE_IR_PHASE, init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.identities) not in (tuple, list) or any(type(i) is not CompiledTypeIRIdentityBinding for i in self.identities):
+            raise TypeError('Type phase requires explicit finite typed representation assignments.')
+        identities = tuple(self.identities)
+        if len({i.definition for i in identities}) != len(identities):
+            raise ValueError('A source type cannot receive ambiguous representation assignments.')
+        object.__setattr__(self, 'identities', identities)
+
+    def execute(self, request: CompilationRequest, state: CompilationState) -> CompilationPhaseResult:
+        try:
+            _type_ir_gate(request, state)
+        except SemanticIREnvelopeError as failure:
+            return failure.phase_failure(self.descriptor.id)
+        by_definition = {i.definition: i.identity for i in self.identities}
+        references = request.canonical_model.references
+        extra = tuple(i.definition for i in self.identities if not request.canonical_model.contains(i.definition))
+        missing = tuple(r for r in references if r not in by_definition)
+        if extra or missing:
+            diagnostics = tuple(_type_ir_diagnostic(CompilationFailure.TYPE_IR_INPUT_MISMATCH, 'Representation assignment is outside current canonical membership.', reference=r) for r in extra) + tuple(_type_ir_diagnostic(CompilationFailure.TYPE_IR_IDENTITY_COVERAGE, 'A selected canonical type has no explicit representation identity.', reference=r, severity=TypeValidationSeverity.WARNING) for r in missing)
+            return CompilationPhaseResult(CompilationPhaseStatus.FAILED if extra else CompilationPhaseStatus.INCOMPLETE, diagnostics, reason='Explicit representation coverage is unavailable or inconsistent.')
+        candidates = []
+        diagnostics = []
+        statuses = []
+        lowerer = CompiledTypeLowerer()
+        for definition in request.canonical_model.list_definitions():
+            reference = ElementVersionRef(definition.type_definition.id, definition.type_definition.version)
+            result = lowerer.lower(definition, request=request, state=state, identity=by_definition[reference])
+            statuses.append(result.status)
+            diagnostics.extend(result.diagnostics)
+            candidates.extend(result.ir_envelopes)
+        if any(status is not CompilationPhaseStatus.COMPLETED for status in statuses):
+            status = CompilationPhaseStatus.FAILED if CompilationPhaseStatus.FAILED in statuses else CompilationPhaseStatus.INCOMPLETE
+            return CompilationPhaseResult(status, tuple(diagnostics), reason='One or more selected type definitions could not be lowered; no partial IR output.')
+        return CompilationPhaseResult(CompilationPhaseStatus.COMPLETED, tuple(diagnostics), ir_envelopes=tuple(candidates))
+
+
+__all__ += ['CompiledTypeReferenceIR', 'CompiledFieldConstraintsIR', 'CompiledFieldIR',
+            'CompiledTypeIR', 'COMPILED_TYPE_IR_PHASE', 'TypeLoweringResult',
+            'CompiledTypeLowerer', 'CompiledTypeIRIdentityBinding', 'CompiledTypeLoweringPhase']

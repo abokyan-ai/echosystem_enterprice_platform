@@ -98,3 +98,7 @@ See [ADR-0032](../architecture/decisions/ADR-0032-compiler-foundation.md), [stat
 ## CMP-03 compatible internal state extension
 
 [Semantic IR Envelope](semantic-ir-envelope.md) adds trailing IR envelope tuples to phase result/state and original outcomes to state. Future explicit EMIT_IR producers commit typed candidates only after original-input/context/phase/duplicate checks; consumers require actual committed membership and completed executed prerequisite evidence. Existing phase execute interface is unchanged. IR does not satisfy artifact output readiness; no default producer/lowering installed. New behavior is deferred/unverified; preserve historical CMP-01 evidence.
+
+## CMP-04 explicit type lowering integration
+
+[Compiled Type IR](compiled-type-ir.md) adds a fixed explicitly composed EMIT_IR phase requiring actual completed executed preparation and original VALID/READY canonical binding. Caller supplies one exact definition → independent IR ID binding per selected type. Missing capability/coverage is incomplete, invalid structural association failed, and neither exposes partial IR. Default compiler composition/artifact objectives are unchanged; no target generator is installed. Historical verification retained; new behavior remains deferred/unverified.
