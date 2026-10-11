@@ -11,6 +11,13 @@ from model_authoring.public import (
     CanonicalizationResult, CanonicalizationDiagnostic, CanonicalSourceAssociation,
     NamespaceResolutionResult, NamespaceResolutionDiagnostic,
     SemanticReferenceDiagnostic, ModelValidationReport, ModelValidationResult,
+    ModelDiagnosticOrigin, ModelDiagnosticTarget, ModelDiagnosticContext,
+    ModelDiagnosticEntry, ModelDiagnosticPayload, associate_model_diagnostic,
+    ModelValidationStatus, CompilationReadiness, ModelValidationStageResult,
+    AuthoringSchemaValidationResult, NamespaceEnvironmentResult,
+    NamespaceSymbolSnapshotResult, SemanticReferenceResolutionResult,
+    SemanticReferenceBatchResult, ResolvedAuthoringInputResult,
+    CanonicalModelConstructionResult, TypeValidationResult,
 )
 
 MODULE_NAME = 'model-loader'
@@ -1110,3 +1117,380 @@ def locate_model_validation(result: ModelValidationResult, loaded: LoadedAuthori
 
 
 __all__ += ['LocatedModelValidationReport', 'locate_model_validation']
+
+
+# MOD-09: source/report presentation at the existing tooling boundary.
+class ModelDiagnosticProcessingStatus(str, Enum):
+    UNAVAILABLE = 'unavailable'
+    SUCCEEDED = 'succeeded'
+    FAILED = 'failed'
+    INCOMPLETE = 'incomplete'
+    PARTIAL = 'partial'
+
+
+class ModelDiagnosticPhase(str, Enum):
+    LOADING = 'loading'
+    AUTHORING_SCHEMA = 'authoring-schema'
+    NAMESPACE_RESOLUTION = 'namespace-resolution'
+    REFERENCE_RESOLUTION = 'reference-resolution'
+    CANONICAL_CONSTRUCTION = 'canonical-construction'
+    CANONICALIZATION = 'canonicalization'
+    TYPE_VALIDATION = 'type-validation'
+    MODEL_VALIDATION = 'model-validation'
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticSourceTarget:
+    source_id: ModelSourceId
+    path: SourceNodePath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.source_id) is not ModelSourceId or self.path is not None and type(self.path) is not SourceNodePath:
+            raise TypeError('Source-only target requires existing source identity and optional node path.')
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticSourceContext:
+    semantic: ModelDiagnosticContext = field(default_factory=ModelDiagnosticContext)
+    indexes: tuple[SourceLocationIndex, ...] = ()
+    default_source_id: ModelSourceId | None = None
+    _indexes: Mapping[ModelSourceId, SourceLocationIndex] = field(init=False, repr=False, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        if type(self.semantic) is not ModelDiagnosticContext or type(self.indexes) not in (tuple, list) or any(type(i) is not SourceLocationIndex for i in self.indexes):
+            raise TypeError('Diagnostic source context requires actual immutable semantic context/indexes.')
+        if self.default_source_id is not None and type(self.default_source_id) is not ModelSourceId:
+            raise TypeError('Default source must be explicitly identified, never inferred from filenames.')
+        indexes = tuple(self.indexes)
+        if len({i.source_id for i in indexes}) != len(indexes):
+            raise ValueError('Several snapshots for one source are ambiguous; supply one explicitly selected index.')
+        object.__setattr__(self, 'indexes', indexes)
+        object.__setattr__(self, '_indexes', MappingProxyType({i.source_id: i for i in indexes}))
+
+    def location(self, target: ModelDiagnosticSourceTarget | None) -> SourceLocation | None:
+        if target is None or target.path is None:
+            return None
+        index = self._indexes.get(target.source_id)
+        return None if index is None else index.find(target.path)
+
+
+@dataclass(frozen=True, slots=True)
+class LocatedModelDiagnosticEntry:
+    entry: ModelDiagnosticEntry | ModelLoadDiagnostic
+    source_target: ModelDiagnosticSourceTarget | None = None
+    location: SourceLocation | None = None
+    related_source_targets: tuple[ModelDiagnosticSourceTarget | None, ...] = ()
+    related_locations: tuple[SourceLocation | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.entry) not in (ModelDiagnosticEntry, ModelLoadDiagnostic):
+            raise TypeError('Located entry retains the actual typed domain envelope or loading diagnostic.')
+        if self.source_target is not None and type(self.source_target) is not ModelDiagnosticSourceTarget:
+            raise TypeError('Source target must be typed or absent.')
+        if self.location is not None and type(self.location) is not SourceLocation:
+            raise TypeError('Primary location must be an actual source location.')
+        for name, expected in (('related_source_targets', ModelDiagnosticSourceTarget), ('related_locations', SourceLocation)):
+            values = getattr(self, name)
+            if type(values) not in (tuple, list) or any(v is not None and type(v) is not expected for v in values):
+                raise TypeError('Related source information is an immutable typed sequence with explicit absence.')
+            object.__setattr__(self, name, tuple(values))
+        if len(self.related_source_targets) != len(self.related_locations):
+            raise ValueError('Related source/location slots must retain positional correspondence.')
+        pairs = ((self.source_target, self.location), *zip(self.related_source_targets, self.related_locations))
+        if any(t is not None and loc is not None and t.source_id != loc.source_id for t, loc in pairs):
+            raise ValueError('Source association and physical location must agree on source identity.')
+        if type(self.entry) is ModelLoadDiagnostic:
+            if self.source_target is None or self.source_target.source_id != self.entry.source.source_id:
+                raise ValueError('Loading entry must preserve its original source identity.')
+            if self.entry.source_location is not None and self.location != self.entry.source_location:
+                raise ValueError('Existing reliable loading location must be preserved.')
+            if self.related_locations[:len(self.entry.related_locations)] != self.entry.related_locations:
+                raise ValueError('Original related loading locations must remain intact and ordered.')
+
+    @property
+    def diagnostic(self) -> ModelDiagnosticPayload | ModelLoadDiagnostic:
+        return self.entry.diagnostic if type(self.entry) is ModelDiagnosticEntry else self.entry
+
+    @property
+    def origin(self) -> ModelDiagnosticOrigin:
+        return self.entry.origin if type(self.entry) is ModelDiagnosticEntry else ModelDiagnosticOrigin.MODEL_LOADER
+
+    @property
+    def severity(self) -> str:
+        severity = self.diagnostic.severity
+        return severity.value if isinstance(severity, Enum) else severity
+
+    @property
+    def target(self) -> ModelDiagnosticTarget | None:
+        return self.entry.target if type(self.entry) is ModelDiagnosticEntry else None
+
+    @property
+    def stage_id(self) -> str | None:
+        return self.entry.stage_id if type(self.entry) is ModelDiagnosticEntry else None
+
+
+def enrich_model_diagnostic(entry: ModelDiagnosticEntry | ModelLoadDiagnostic | LocatedModelDiagnosticEntry, context: ModelDiagnosticSourceContext) -> LocatedModelDiagnosticEntry:
+    if type(context) is not ModelDiagnosticSourceContext or type(entry) not in (ModelDiagnosticEntry, ModelLoadDiagnostic, LocatedModelDiagnosticEntry):
+        raise TypeError('Enrichment requires an actual immutable diagnostic entry and source context.')
+    if type(entry) is LocatedModelDiagnosticEntry:
+        return entry  # explicit existing location evidence takes precedence over optional enrichment
+    if type(entry) is ModelLoadDiagnostic:
+        source_id = entry.source.source_id
+        path = None if entry.schema_diagnostic is None else SourceNodePath.from_authoring_path(entry.schema_diagnostic.path)
+        source = ModelDiagnosticSourceTarget(source_id, path)
+        location = entry.source_location if entry.source_location is not None else context.location(source)
+        if entry.position is not None and location is not None:
+            start = location.span.start
+            if (start.line, start.column) != (entry.position.line, entry.position.column) or start.offset is not None and entry.position.offset is not None and start.offset != entry.position.offset:
+                location = entry.source_location  # incompatible optional index cannot replace original evidence
+        related_sources = [ModelDiagnosticSourceTarget(loc.source_id) for loc in entry.related_locations]
+        related_locations = list(entry.related_locations)
+        if not related_locations and entry.schema_diagnostic is not None and entry.schema_diagnostic.related_path is not None:
+            related = ModelDiagnosticSourceTarget(source_id, SourceNodePath.from_authoring_path(entry.schema_diagnostic.related_path))
+            related_sources.append(related)
+            related_locations.append(context.location(related))
+        return LocatedModelDiagnosticEntry(entry, source, location, related_sources, related_locations)
+    source_id = context.default_source_id
+    source = None if source_id is None else ModelDiagnosticSourceTarget(source_id, None if entry.source_path is None else SourceNodePath.from_authoring_path(entry.source_path))
+    related_sources = tuple(None if source_id is None else ModelDiagnosticSourceTarget(source_id, SourceNodePath.from_authoring_path(path)) for path in entry.related_paths)
+    return LocatedModelDiagnosticEntry(entry, source, context.location(source), related_sources, tuple(context.location(t) for t in related_sources))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticOperation:
+    phase: ModelDiagnosticPhase
+    status: ModelDiagnosticProcessingStatus
+    entries: tuple[LocatedModelDiagnosticEntry, ...] = ()
+    validation_result: ModelValidationResult | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not ModelDiagnosticPhase or type(self.status) is not ModelDiagnosticProcessingStatus:
+            raise TypeError('Operation outcome uses explicit processing phase/status, not diagnostic counts.')
+        if type(self.entries) not in (tuple, list) or any(type(e) is not LocatedModelDiagnosticEntry for e in self.entries):
+            raise TypeError('Operation entries must be immutable typed snapshots.')
+        object.__setattr__(self, 'entries', tuple(self.entries))
+        if (self.phase is ModelDiagnosticPhase.MODEL_VALIDATION) != (self.validation_result is not None):
+            raise ValueError('Only actual MOD-08 outcomes supply validation status/readiness.')
+        if self.validation_result is not None:
+            if type(self.validation_result) is not ModelValidationResult:
+                raise TypeError('Validation outcome must be the original actual MOD-08 result.')
+            original = tuple(e.entry.validation_report if type(e.entry) is ModelDiagnosticEntry else None for e in self.entries)
+            if original != self.validation_result.diagnostics:
+                raise ValueError('Validation operation must preserve every MOD-08 report in original order.')
+            if self.status.value != {'valid': 'succeeded', 'invalid': 'failed', 'incomplete': 'incomplete'}[self.validation_result.status.value]:
+                raise ValueError('Processing status cannot contradict the authoritative MOD-08 outcome.')
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticSummary:
+    total: int
+    errors: int
+    warnings: int
+    info: int
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or v < 0 for v in (self.total, self.errors, self.warnings, self.info)) or self.total != self.errors + self.warnings + self.info:
+            raise ValueError('Summary counts must be nonnegative and consistent.')
+
+
+def summarize_model_diagnostics(entries: tuple[LocatedModelDiagnosticEntry, ...]) -> ModelDiagnosticSummary:
+    if type(entries) not in (tuple, list) or any(type(e) is not LocatedModelDiagnosticEntry for e in entries):
+        raise TypeError('Summary requires actual immutable diagnostic entries.')
+    counts = {'error': 0, 'warning': 0, 'info': 0}
+    for entry in entries:
+        counts[entry.severity] += 1
+    return ModelDiagnosticSummary(len(entries), counts['error'], counts['warning'], counts['info'])
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticReport:
+    operations: tuple[ModelDiagnosticOperation, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.operations) not in (tuple, list) or any(type(o) is not ModelDiagnosticOperation for o in self.operations):
+            raise TypeError('Report requires immutable explicit operation snapshots.')
+        rank = {phase: i for i, phase in enumerate(ModelDiagnosticPhase)}
+        operations = tuple(sorted(self.operations, key=lambda o: rank[o.phase]))
+        if sum(o.validation_result is not None for o in operations) > 1:
+            raise ValueError('One report may preserve at most one authoritative canonical validation run; use separate reports for multiple models/runs.')
+        object.__setattr__(self, 'operations', operations)
+
+    @property
+    def entries(self) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        return tuple(e for operation in self.operations for e in operation.entries)
+
+    @property
+    def validation_result(self) -> ModelValidationResult | None:
+        return next((o.validation_result for o in self.operations if o.validation_result is not None), None)
+
+    @property
+    def validation_status(self) -> ModelValidationStatus | None:
+        return None if self.validation_result is None else self.validation_result.status
+
+    @property
+    def compilation_readiness(self) -> CompilationReadiness | None:
+        return None if self.validation_result is None else self.validation_result.readiness
+
+    @property
+    def stage_outcomes(self) -> tuple[ModelValidationStageResult, ...]:
+        return () if self.validation_result is None else self.validation_result.stage_outcomes
+
+    @property
+    def processing_status(self) -> ModelDiagnosticProcessingStatus:
+        statuses = tuple(o.status for o in self.operations)
+        if not statuses or ModelDiagnosticProcessingStatus.UNAVAILABLE in statuses:
+            return ModelDiagnosticProcessingStatus.UNAVAILABLE
+        if ModelDiagnosticProcessingStatus.FAILED in statuses:
+            return ModelDiagnosticProcessingStatus.FAILED
+        if ModelDiagnosticProcessingStatus.PARTIAL in statuses:
+            return ModelDiagnosticProcessingStatus.PARTIAL
+        if ModelDiagnosticProcessingStatus.INCOMPLETE in statuses:
+            return ModelDiagnosticProcessingStatus.INCOMPLETE
+        return ModelDiagnosticProcessingStatus.SUCCEEDED
+
+    @property
+    def summary(self) -> ModelDiagnosticSummary:
+        return summarize_model_diagnostics(self.entries)
+
+    def by_severity(self, severity: str) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(severity) is not str or severity not in ('error', 'warning', 'info'):
+            raise ValueError('Use existing severity scalar values; no escalation/new severity model.')
+        return tuple(e for e in self.entries if e.severity == severity)
+
+    def by_origin(self, origin: ModelDiagnosticOrigin) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(origin) is not ModelDiagnosticOrigin:
+            raise TypeError('Origin filtering requires a supported origin.')
+        return tuple(e for e in self.entries if e.origin is origin)
+
+    def by_semantic_target(self, target: ModelDiagnosticTarget) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(target) is not ModelDiagnosticTarget:
+            raise TypeError('Target filtering requires an actual stable target association.')
+        return tuple(e for e in self.entries if e.target == target)
+
+    def by_source(self, source_id: ModelSourceId) -> tuple[LocatedModelDiagnosticEntry, ...]:
+        if type(source_id) is not ModelSourceId:
+            raise TypeError('Source filtering requires an explicit ModelSourceId.')
+        return tuple(e for e in self.entries if any(t is not None and t.source_id == source_id for t in (e.source_target, *e.related_source_targets)))
+
+    def group_by_origin(self) -> Mapping[ModelDiagnosticOrigin, tuple[LocatedModelDiagnosticEntry, ...]]:
+        groups = {origin: [] for origin in ModelDiagnosticOrigin}
+        for entry in self.entries:
+            groups[entry.origin].append(entry)
+        return MappingProxyType({origin: tuple(entries) for origin, entries in groups.items() if entries})
+
+    def group_by_severity(self) -> Mapping[str, tuple[LocatedModelDiagnosticEntry, ...]]:
+        groups = {'error': [], 'warning': [], 'info': []}
+        for entry in self.entries:
+            groups[entry.severity].append(entry)
+        return MappingProxyType({severity: tuple(entries) for severity, entries in groups.items() if entries})
+
+
+ModelDiagnosticInput = ModelLoadResult | ModelLoadBatchResult | AuthoringSchemaValidationResult | NamespaceResolutionResult | NamespaceEnvironmentResult | NamespaceSymbolSnapshotResult | SemanticReferenceResolutionResult | SemanticReferenceBatchResult | ResolvedAuthoringInputResult | CanonicalModelConstructionResult | CanonicalizationResult | TypeValidationResult | ModelValidationResult
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiagnosticReporter:
+    def report(self, results: tuple[ModelDiagnosticInput, ...], context: ModelDiagnosticSourceContext) -> ModelDiagnosticReport:
+        if type(results) not in (tuple, list) or type(context) is not ModelDiagnosticSourceContext:
+            raise TypeError('Reporter requires explicit finite operation results and immutable source context.')
+        operations = []
+        for result in results:
+            original_validation = None
+            if type(result) in (ModelLoadResult, ModelLoadBatchResult):
+                phase = ModelDiagnosticPhase.LOADING
+                if type(result) is ModelLoadResult:
+                    status = ModelDiagnosticProcessingStatus.SUCCEEDED if result.is_success else ModelDiagnosticProcessingStatus.FAILED
+                else:
+                    status = {ModelLoadBatchStatus.EMPTY: ModelDiagnosticProcessingStatus.UNAVAILABLE, ModelLoadBatchStatus.ALL_LOADED: ModelDiagnosticProcessingStatus.SUCCEEDED, ModelLoadBatchStatus.PARTIAL: ModelDiagnosticProcessingStatus.PARTIAL, ModelLoadBatchStatus.ALL_FAILED: ModelDiagnosticProcessingStatus.FAILED}[result.status]
+                entries = tuple(enrich_model_diagnostic(d, context) for d in result.diagnostics)
+                operations.append(ModelDiagnosticOperation(phase, status, entries))
+                continue
+            if type(result) is AuthoringSchemaValidationResult:
+                phase, successful = ModelDiagnosticPhase.AUTHORING_SCHEMA, result.is_valid
+            elif type(result) in (NamespaceResolutionResult, NamespaceEnvironmentResult, NamespaceSymbolSnapshotResult):
+                phase, successful = ModelDiagnosticPhase.NAMESPACE_RESOLUTION, result.is_success
+            elif type(result) is SemanticReferenceResolutionResult:
+                phase, successful = ModelDiagnosticPhase.REFERENCE_RESOLUTION, result.is_success
+            elif type(result) is SemanticReferenceBatchResult:
+                phase, successful = ModelDiagnosticPhase.REFERENCE_RESOLUTION, result.all_required_bindings_satisfied
+            elif type(result) is ResolvedAuthoringInputResult:
+                phase, successful = ModelDiagnosticPhase.REFERENCE_RESOLUTION, result.ready_for_canonicalization
+            elif type(result) is CanonicalModelConstructionResult:
+                phase, successful = ModelDiagnosticPhase.CANONICAL_CONSTRUCTION, result.is_success
+            elif type(result) is CanonicalizationResult:
+                phase, successful = ModelDiagnosticPhase.CANONICALIZATION, result.is_success
+            elif type(result) is TypeValidationResult:
+                phase, successful = ModelDiagnosticPhase.TYPE_VALIDATION, result.is_valid
+            elif type(result) is ModelValidationResult:
+                phase, successful = ModelDiagnosticPhase.MODEL_VALIDATION, result.status.value == 'valid'
+                original_validation = result
+            else:
+                raise TypeError('Unsupported operation result; origin/status cannot be guessed from messages or class names.')
+            status = ModelDiagnosticProcessingStatus.SUCCEEDED if successful else ModelDiagnosticProcessingStatus.FAILED
+            if type(result) is SemanticReferenceBatchResult and result.status.value == 'partially-resolved':
+                status = ModelDiagnosticProcessingStatus.PARTIAL
+            if original_validation is not None and original_validation.status.value == 'incomplete':
+                status = ModelDiagnosticProcessingStatus.INCOMPLETE
+            entries = tuple(enrich_model_diagnostic(associate_model_diagnostic(d, context.semantic), context) for d in result.diagnostics)
+            operations.append(ModelDiagnosticOperation(phase, status, entries, original_validation))
+        return ModelDiagnosticReport(operations)
+
+
+def model_diagnostic_report_payload(report: ModelDiagnosticReport, *, include_messages: bool = False, include_source_details: bool = False, include_semantic_targets: bool = False) -> dict[str, object]:
+    """Explicit JSON-ready presentation, no HTTP/permission policy or repr dump.
+
+    Caller uses existing authorization before opting into source/ID/text details.
+    Defaults expose no arbitrary diagnostic text, source paths or semantic IDs.
+    No absolute physical filename/source content/stack trace fields are emitted.
+    """
+    if type(report) is not ModelDiagnosticReport or any(type(v) is not bool for v in (include_messages, include_source_details, include_semantic_targets)):
+        raise TypeError('Transport requires the actual report and explicit disclosure booleans.')
+    def location(loc: SourceLocation | None) -> dict[str, object] | None:
+        if loc is None:
+            return None
+        return {'source_id': loc.source_id.value, 'start': {'line': loc.span.start.line, 'column': loc.span.start.column, 'offset': loc.span.start.offset}, 'end': {'line': loc.span.end.line, 'column': loc.span.end.column, 'offset': loc.span.end.offset}}
+    def target(value: ModelDiagnosticTarget | None) -> dict[str, object] | None:
+        if value is None:
+            return None
+        # Existing ref kinds determine representation, never infer exact version.
+        reference = value.reference
+        return {'kind': value.kind.value, 'element_id': reference.element_id.value, 'version': value.exact_version, 'field_id': None if value.field_id is None else value.field_id.value}
+    entries = []
+    for entry in report.entries:
+        d = entry.diagnostic
+        code = d.code.value if isinstance(d.code, Enum) else d.code
+        item = {'code': code, 'severity': entry.severity, 'origin': entry.origin.value, 'validation_stage': entry.stage_id}
+        if type(entry.entry) is ModelLoadDiagnostic:
+            item['loading_stage'] = entry.entry.stage.value
+            item['cause_codes'] = [] if entry.entry.schema_diagnostic is None else [entry.entry.schema_diagnostic.code]
+            item['related_input_index'] = entry.entry.related_input_index
+        else:
+            item['cause_codes'] = list(entry.entry.cause_codes)
+        if include_messages:
+            item['message'] = d.message
+        if include_semantic_targets:
+            item['target'] = target(entry.target)
+            item['related_targets'] = [] if type(entry.entry) is ModelLoadDiagnostic else [target(t) for t in entry.entry.related_targets]
+        if include_source_details:
+            item['source'] = None if entry.source_target is None else {'source_id': entry.source_target.source_id.value, 'path': None if entry.source_target.path is None else entry.source_target.path.pointer}
+            item['location'] = location(entry.location)
+            item['related_locations'] = [location(loc) for loc in entry.related_locations]
+            item['related_sources'] = [None if t is None else {'source_id': t.source_id.value, 'path': None if t.path is None else t.path.pointer} for t in entry.related_source_targets]
+            if type(entry.entry) is ModelLoadDiagnostic and entry.entry.position is not None:
+                p = entry.entry.position
+                item['position'] = {'line': p.line, 'column': p.column, 'offset': p.offset}
+        entries.append(item)
+    summary = report.summary
+    return {'processing_status': report.processing_status.value,
+            'validation_status': None if report.validation_status is None else report.validation_status.value,
+            'compilation_readiness': None if report.compilation_readiness is None else report.compilation_readiness.value,
+            'operations': [{'phase': o.phase.value, 'status': o.status.value} for o in report.operations],
+            'stage_outcomes': [{'stage_id': s.stage_id, 'status': s.status.value, **({'reason': s.reason} if include_messages else {})} for s in report.stage_outcomes],
+            'entries': entries, 'summary': {'total': summary.total, 'errors': summary.errors, 'warnings': summary.warnings, 'info': summary.info}}
+
+
+__all__ += ['ModelDiagnosticProcessingStatus', 'ModelDiagnosticPhase', 'ModelDiagnosticSourceTarget',
+            'ModelDiagnosticSourceContext', 'LocatedModelDiagnosticEntry', 'enrich_model_diagnostic',
+            'ModelDiagnosticOperation', 'ModelDiagnosticSummary', 'summarize_model_diagnostics',
+            'ModelDiagnosticReport', 'ModelDiagnosticInput', 'ModelDiagnosticReporter',
+            'model_diagnostic_report_payload']

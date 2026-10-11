@@ -29,7 +29,7 @@ from model_core.public import (
     CanonicalModel, CanonicalDefinition, CanonicalModelFactory, CanonicalConstructionDiagnostic,
     create_type_data_definition,
     TypeLookup, TypeRegistryAmbiguityError, TypeValidator, TypeValidationContext,
-    TypeValidationDiagnostic,
+    TypeValidationDiagnostic, TypeValidationResult, CanonicalModelConstructionResult,
 )
 
 MODULE_NAME = 'model-authoring'
@@ -2057,3 +2057,185 @@ __all__ += [
     'ModelValidationStage', 'ModelValidationStageResult', 'ModelValidationResult',
     'CanonicalIntegrityValidationStage', 'TypeSemanticValidationStage', 'ModelValidationPipeline',
 ]
+
+
+# MOD-09 associates existing judgments; no validator or source tooling execution.
+class ModelDiagnosticOrigin(_Enum):
+    AUTHORING_SCHEMA = 'authoring-schema'
+    MODEL_LOADER = 'model-loader'
+    NAMESPACE_RESOLVER = 'namespace-resolver'
+    REFERENCE_RESOLVER = 'reference-resolver'
+    CANONICALIZER = 'canonicalizer'
+    CANONICAL_CONSTRUCTION = 'canonical-construction'
+    TYPE_VALIDATOR = 'type-validator'
+    MODEL_VALIDATION_PIPELINE = 'model-validation-pipeline'
+
+
+class ModelDiagnosticTargetKind(_Enum):
+    DEFINITION = 'definition'
+    FIELD = 'field'
+    REFERENCE = 'reference'
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelDiagnosticTarget:
+    kind: ModelDiagnosticTargetKind
+    reference: ElementRef | ElementVersionRef
+    field_id: FieldId | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not ModelDiagnosticTargetKind:
+            raise TypeError('Diagnostic target kind must be explicit.')
+        _resolution_reference(self.reference)
+        if (self.kind is ModelDiagnosticTargetKind.FIELD) != (self.field_id is not None):
+            raise ValueError('Only field targets carry an existing owned FieldId.')
+        if self.field_id is not None and type(self.field_id) is not FieldId:
+            raise TypeError('Field identity is FieldId, never SemanticElementId.')
+
+    @property
+    def exact_version(self) -> str | None:
+        return str(self.reference.version) if type(self.reference) is ElementVersionRef else None
+
+
+ModelDiagnosticPayload = AuthoringSchemaDiagnostic | CanonicalConstructionDiagnostic | CanonicalizationDiagnostic | NamespaceResolutionDiagnostic | SemanticReferenceDiagnostic | TypeValidationDiagnostic | ModelValidationDiagnostic
+_DIAGNOSTIC_ORIGINS = _MappingProxyType({
+    AuthoringSchemaDiagnostic: ModelDiagnosticOrigin.AUTHORING_SCHEMA,
+    CanonicalConstructionDiagnostic: ModelDiagnosticOrigin.CANONICAL_CONSTRUCTION,
+    CanonicalizationDiagnostic: ModelDiagnosticOrigin.CANONICALIZER,
+    NamespaceResolutionDiagnostic: ModelDiagnosticOrigin.NAMESPACE_RESOLVER,
+    SemanticReferenceDiagnostic: ModelDiagnosticOrigin.REFERENCE_RESOLVER,
+    TypeValidationDiagnostic: ModelDiagnosticOrigin.TYPE_VALIDATOR,
+    ModelValidationDiagnostic: ModelDiagnosticOrigin.MODEL_VALIDATION_PIPELINE,
+})
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelDiagnosticContext:
+    semantic_context: SemanticContextRef | None = None
+    source_associations: tuple[CanonicalSourceAssociation, ...] = ()
+    _paths: _Mapping[CanonicalSourceTarget, tuple[AuthoringSchemaPath, ...]] = _dataclass_field(init=False, repr=False, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        if self.semantic_context is not None and (type(self.semantic_context) is not SemanticContextRef or type(self.semantic_context.context_id) is not SemanticElementId):
+            raise TypeError('Optional diagnostic scope must be an actual semantic context.')
+        associations = _ordered(self.source_associations, CanonicalSourceAssociation)
+        groups = {}
+        for association in associations:
+            groups.setdefault(association.target, []).append(association.path)
+        object.__setattr__(self, 'source_associations', associations)
+        object.__setattr__(self, '_paths', _MappingProxyType({target: tuple(dict.fromkeys(paths)) for target, paths in groups.items()}))
+
+    def source_path(self, target: ModelDiagnosticTarget | None) -> AuthoringSchemaPath | None:
+        if target is None or type(target.reference) is not ElementVersionRef or target.kind is ModelDiagnosticTargetKind.REFERENCE:
+            return None
+        key = CanonicalSourceTarget(target.reference, target.field_id)
+        paths = self._paths.get(key)
+        if paths is None and target.field_id is not None:
+            paths = self._paths.get(CanonicalSourceTarget(target.reference))
+        # Multiple explicit distinct associations are unavailable, never first-match.
+        return paths[0] if paths is not None and len(paths) == 1 else None
+
+
+@_dataclass(frozen=True, slots=True)
+class ModelDiagnosticEntry:
+    diagnostic: ModelDiagnosticPayload
+    target: ModelDiagnosticTarget | None = None
+    related_targets: tuple[ModelDiagnosticTarget, ...] = ()
+    source_path: AuthoringSchemaPath | None = None
+    related_paths: tuple[AuthoringSchemaPath, ...] = ()
+    validation_report: ModelValidationReport | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostic) not in _DIAGNOSTIC_ORIGINS:
+            raise TypeError('Entry must retain an actual supported diagnostic contract, not an exception or raw dictionary.')
+        if self.target is not None and type(self.target) is not ModelDiagnosticTarget:
+            raise TypeError('Semantic target association must be typed or absent.')
+        object.__setattr__(self, 'related_targets', _ordered(self.related_targets, ModelDiagnosticTarget))
+        object.__setattr__(self, 'related_paths', _ordered(self.related_paths, AuthoringSchemaPath))
+        _resolution_path(self.source_path)
+        if self.validation_report is not None and (type(self.validation_report) is not ModelValidationReport or self.validation_report.diagnostic != self.diagnostic):
+            raise ValueError('Stage association must preserve the original MOD-08 report and diagnostic.')
+
+    @property
+    def origin(self) -> ModelDiagnosticOrigin:
+        return _DIAGNOSTIC_ORIGINS[type(self.diagnostic)]
+
+    @property
+    def stage_id(self) -> str | None:
+        return None if self.validation_report is None else self.validation_report.stage_id
+
+    @property
+    def cause_codes(self) -> tuple[str, ...]:
+        d = self.diagnostic
+        codes = []
+        if type(d) in (AuthoringSchemaDiagnostic, CanonicalizationDiagnostic, NamespaceResolutionDiagnostic, ModelValidationDiagnostic) and d.cause_code is not None:
+            codes.append(d.cause_code)
+        if type(d) is CanonicalizationDiagnostic and d.membership_diagnostic is not None:
+            codes.append(d.membership_diagnostic.code.value)
+        if type(d) is SemanticReferenceDiagnostic and d.namespace_diagnostic is not None:
+            codes.append(d.namespace_diagnostic.code.value)
+            if d.namespace_diagnostic.cause_code is not None:
+                codes.append(d.namespace_diagnostic.cause_code)
+        return tuple(codes)
+
+
+def associate_model_diagnostic(diagnostic: ModelDiagnosticPayload | ModelValidationReport, context: ModelDiagnosticContext) -> ModelDiagnosticEntry:
+    """Explicit bounded adapters; no message/QName identity inference or lookup."""
+    if type(context) is not ModelDiagnosticContext:
+        raise TypeError('Association requires the actual immutable diagnostic context.')
+    report = diagnostic if type(diagnostic) is ModelValidationReport else None
+    d = diagnostic.diagnostic if report is not None else diagnostic
+    if type(d) not in _DIAGNOSTIC_ORIGINS:
+        raise TypeError('Unsupported diagnostic producer; no origin guessing.')
+    target = None
+    related = ()
+    path = None
+    related_paths = ()
+    if report is not None and report.definition is not None:
+        field_id = d.field_id if type(d) is TypeValidationDiagnostic else None
+        target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION if field_id is None else ModelDiagnosticTargetKind.FIELD, report.definition, field_id)
+    if type(d) is TypeValidationDiagnostic:
+        if d.target is not None:
+            related = (ModelDiagnosticTarget(ModelDiagnosticTargetKind.REFERENCE, d.target),)
+    elif type(d) is CanonicalConstructionDiagnostic:
+        if target is None and d.reference is not None:
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.reference)
+        if d.related_reference is not None:
+            related = (ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.related_reference),)
+    elif type(d) is CanonicalizationDiagnostic:
+        path = d.path
+        related_paths = () if d.related_path is None else (d.related_path,)
+        if d.membership_diagnostic is not None and d.membership_diagnostic.reference is not None:
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.membership_diagnostic.reference)
+        if d.membership_diagnostic is not None and d.membership_diagnostic.related_reference is not None:
+            related = (ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.membership_diagnostic.related_reference),)
+    elif type(d) is AuthoringSchemaDiagnostic:
+        path = d.path
+        related_paths = () if d.related_path is None else (d.related_path,)
+    elif type(d) is NamespaceResolutionDiagnostic:
+        path, related_paths = d.path, d.related_paths
+        # Candidates are alternatives, never select a target from ambiguity.
+        if type(d.expression) in (AuthoringIdentityExpression, AuthoringVersionExpression):
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.REFERENCE, d.expression.reference)
+    elif type(d) is SemanticReferenceDiagnostic:
+        path, related_paths = d.path, d.related_paths
+        if d.target_reference is not None:
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.REFERENCE, d.target_reference)
+        elif d.request is not None and type(d.request.expression) in (AuthoringIdentityExpression, AuthoringVersionExpression):
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.REFERENCE, d.request.expression.reference)
+    elif type(d) is ModelValidationDiagnostic and d.reference is not None:
+        reference_target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.REFERENCE, d.reference)
+        if target is None:
+            target = reference_target
+        else:
+            related = (reference_target,)
+    if report is not None and report.source_path is not None:
+        path = report.source_path
+    if path is None:
+        path = context.source_path(target)
+    return ModelDiagnosticEntry(d, target, related, path, related_paths, report)
+
+
+__all__ += ['ModelDiagnosticOrigin', 'ModelDiagnosticTargetKind', 'ModelDiagnosticTarget',
+            'ModelDiagnosticPayload', 'ModelDiagnosticContext', 'ModelDiagnosticEntry',
+            'associate_model_diagnostic']
