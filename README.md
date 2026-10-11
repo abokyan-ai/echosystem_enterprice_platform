@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations, bounded runtime-loading orchestration, a scoped exact-version registry and conditional immutable instance orchestration are implemented. Actual TYPE-08 canonical instances, approved loaded instance schemas/decoders and authenticated runtime integrations remain unavailable; activation, persistence and UI remain future capabilities.
+A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations, bounded runtime-loading orchestration, a scoped exact-version registry and conditional immutable instance orchestration and shared read-only validation are implemented. Actual TYPE-08 canonical instances, approved loaded instance schemas/decoders and authenticated runtime integrations remain unavailable; activation, persistence and UI remain future capabilities.
 
 ## Quick start
 
@@ -244,3 +244,7 @@ Pure application-owned in-memory registry with original RUN-01 evidence, explici
 ## RUN-03 — Semantic Instance Runtime
 
 Pure Python application-owned create/update/inspect orchestration consumes original exact RUN-02 entries, existing FieldId/presence/nullability/constraint semantics and explicitly approved authoritative TYPE-08 ports. New immutable states preserve ID/version/context, with local expected revisions and independently bound permissions. Actual TYPE-08/schema/decoder/authority integrations are **unavailable**: defaults fail closed, no canonical instance/sentinel/decoder or successful demo is fabricated. No persistence/ORM/endpoint/activation/action/event/workflow. [Contract and conditional Mini Sales](docs/runtime/semantic-instance-runtime.md), [ADR-0044](docs/architecture/decisions/ADR-0044-semantic-instance-runtime.md), [source/completion record](docs/architecture/run03-verification.md), [200 deferred cases](test-archive/RUN-03/RUN-03-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-03; RUN-04 not started.
+
+## RUN-04 Runtime Validation
+
+[Read-only complete-instance validation](docs/runtime/runtime-validation.md) now supplies one authoritative engine for RUN-03 whole-candidate acceptance, immutable typed evidence and explicit VALID/INVALID/INCOMPLETE status with independent completeness. Exact scoped registered definitions, existing field/type rules and bounded capability gates are reused. Pattern/decimal/reference/model-level gaps fail closed; actual TYPE-08/schema/authority/end-to-end integration remains blocked. No API/ORM/persistence or RUN-05. [ADR-0045](docs/architecture/decisions/ADR-0045-runtime-validation.md), [209 deferred cases](test-archive/RUN-04/RUN-04-deferred-tests.md), [completion/static record](docs/architecture/run04-verification.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**.
