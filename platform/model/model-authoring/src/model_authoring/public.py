@@ -1,18 +1,21 @@
-"""MOD-01 authoring schema and MOD-05 explicit canonical transformation.
+"""MOD-01 schema, MOD-05 canonicalization and MOD-06 scoped name resolution.
 
 Input is a decoded JSON-compatible abstract tree, never JSON/YAML source text.
 Schema projection returns authoring snapshots; canonicalization is a separate
-operation requiring typed resolution bindings. No name resolution, registry,
-compiler, runtime or parser dependency.
+operation requiring typed resolution bindings. Namespace resolution is a
+separate explicit-environment operation; no registry mutation, compiler,
+runtime or parser dependency.
 """
-from dataclasses import dataclass as _dataclass
+from dataclasses import dataclass as _dataclass, field as _dataclass_field
 from enum import Enum as _Enum
 from types import MappingProxyType as _MappingProxyType
+from typing import Mapping as _Mapping
 from semantic_kernel.public import (
     SemanticElementId, SemanticElementIdError, SemanticContextRef,
     SemanticContextRefError, Namespace, NamespaceError, QualifiedName,
     QualifiedNameError, SemanticVersion, SemanticVersionError, PrimitiveType,
-    PrimitiveTypeError, ElementRef, ElementVersionRef,
+    PrimitiveTypeError, ElementRef, ElementVersionRef, SemanticElementKind,
+    SemanticElementKinds,
 )
 from model_core.public import (
     FieldId, FieldIdError, FieldName, FieldNameError, FieldConstraintError,
@@ -23,6 +26,7 @@ from model_core.public import (
     DataFacet, DataFacetError, PrimitiveTypeRef, SemanticTypeRef, TypeRefError,
     CanonicalModel, CanonicalDefinition, CanonicalModelFactory, CanonicalConstructionDiagnostic,
     create_type_data_definition,
+    TypeLookup, TypeRegistryAmbiguityError,
 )
 
 MODULE_NAME = 'model-authoring'
@@ -870,4 +874,453 @@ __all__ += [
     'ResolvedAuthoringModel', 'ResolvedTypeBinding', 'ResolvedFieldBinding',
     'Canonicalizer', 'CanonicalizationResult', 'CanonicalizationDiagnostic',
     'CanonicalizationFailure', 'CanonicalSourceTarget', 'CanonicalSourceAssociation',
+]
+
+
+# MOD-06: name-to-identity resolution in explicit immutable visibility snapshots.
+class NamespaceResolutionFailure(_Enum):
+    INVALID_EXPRESSION = 'MOD-NAMESPACE-001'
+    INVALID_ENVIRONMENT = 'MOD-NAMESPACE-002'
+    NAME_NOT_FOUND = 'MOD-NAMESPACE-003'
+    AMBIGUOUS_NAME = 'MOD-NAMESPACE-004'
+    ALIAS_NOT_FOUND = 'MOD-NAMESPACE-005'
+    ALIAS_COLLISION = 'MOD-NAMESPACE-006'
+    CONTEXT_MISMATCH = 'MOD-NAMESPACE-007'
+    KIND_MISMATCH = 'MOD-NAMESPACE-008'
+    VERSION_NOT_FOUND = 'MOD-NAMESPACE-009'
+    SYMBOL_COLLISION = 'MOD-NAMESPACE-010'
+    UNBOUND_LOOKUP_VERSION = 'MOD-NAMESPACE-011'
+    INVALID_BINDING = 'MOD-NAMESPACE-012'
+
+
+def _resolution_reference(reference: ElementRef | ElementVersionRef) -> None:
+    if type(reference) not in (ElementRef, ElementVersionRef) or type(reference.element_id) is not SemanticElementId:
+        raise TypeError('Resolution requires canonical Kernel reference values.')
+    if type(reference) is ElementVersionRef and type(reference.version) is not SemanticVersion:
+        raise TypeError('Exact resolution requires a canonical SemanticVersion.')
+
+
+def _resolution_path(path: AuthoringSchemaPath | None) -> None:
+    if path is not None and type(path) is not AuthoringSchemaPath:
+        raise TypeError('Optional source coordinates require the existing authoring path.')
+
+
+@_dataclass(frozen=True, slots=True)
+class SemanticSymbol:
+    """Minimal declared coordinate; no semantic definition/facet is duplicated."""
+    context: SemanticContextRef
+    qualified_name: QualifiedName
+    reference: ElementVersionRef
+    kind: SemanticElementKind
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId:
+            raise TypeError('Symbol requires an explicit canonical context.')
+        if type(self.qualified_name) is not QualifiedName or type(self.qualified_name.namespace) is not Namespace or type(self.kind) is not SemanticElementKind:
+            raise TypeError('Symbol name/kind must use existing Kernel values.')
+        _resolution_reference(self.reference)
+        if type(self.reference) is not ElementVersionRef:
+            raise TypeError('Each declared symbol records its explicit definition version.')
+        _resolution_path(self.path)
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceAlias:
+    """Environment-scoped alias to a concrete Namespace, never another alias."""
+    alias: Namespace
+    target: Namespace
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.alias) is not Namespace or len(self.alias.segments) != 1 or type(self.target) is not Namespace:
+            raise TypeError('Alias requires a single canonical namespace segment and concrete Namespace target.')
+        _resolution_path(self.path)
+
+
+@_dataclass(frozen=True, slots=True)
+class AliasQualifiedNameExpression:
+    """Explicit resolver-only capability; not an extension of MOD-01 syntax."""
+    alias: Namespace
+    local_name: str
+
+    def __post_init__(self) -> None:
+        if type(self.alias) is not Namespace or len(self.alias.segments) != 1 or type(self.local_name) is not str:
+            raise TypeError('Alias-qualified expression requires an explicit single alias and local name.')
+        QualifiedName.create(self.alias, self.local_name)
+
+
+NamespaceNameExpression = AuthoringNameExpression | AuthoringIdentityExpression | AuthoringVersionExpression | AliasQualifiedNameExpression
+_NAMESPACE_EXPRESSION_TYPES = (AuthoringNameExpression, AuthoringIdentityExpression, AuthoringVersionExpression, AliasQualifiedNameExpression)
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceResolutionRequest:
+    expression: NamespaceNameExpression
+    context: SemanticContextRef
+    expected_kind: SemanticElementKind | None = None
+    exact_version: SemanticVersion | None = None
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.expression) not in _NAMESPACE_EXPRESSION_TYPES:
+            raise TypeError('Name resolution requires a supported explicit expression variant.')
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId:
+            raise TypeError('Resolution request requires an explicit canonical context.')
+        if self.expected_kind is not None and type(self.expected_kind) is not SemanticElementKind or self.exact_version is not None and type(self.exact_version) is not SemanticVersion:
+            raise TypeError('Optional kind/version requirements must use existing Kernel values.')
+        _resolution_path(self.path)
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceResolutionDiagnostic:
+    """Narrow actual MOD diagnostic seam pending missing general SK-11."""
+    code: NamespaceResolutionFailure
+    message: str
+    context: SemanticContextRef | None = None
+    expression: NamespaceNameExpression | None = None
+    exact_version: SemanticVersion | None = None
+    candidates: tuple[SemanticSymbol, ...] = ()
+    path: AuthoringSchemaPath | None = None
+    related_paths: tuple[AuthoringSchemaPath, ...] = ()
+    cause_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not NamespaceResolutionFailure or type(self.message) is not str or not self.message:
+            raise TypeError('Namespace diagnostics require a known code and nonempty message.')
+        if self.context is not None and (type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId):
+            raise TypeError('Diagnostic context must be a canonical context or absent.')
+        if self.expression is not None and type(self.expression) not in _NAMESPACE_EXPRESSION_TYPES or self.exact_version is not None and type(self.exact_version) is not SemanticVersion:
+            raise TypeError('Diagnostic expression/version must be typed or absent.')
+        object.__setattr__(self, 'candidates', _ordered(self.candidates, SemanticSymbol))
+        object.__setattr__(self, 'related_paths', _ordered(self.related_paths, AuthoringSchemaPath))
+        _resolution_path(self.path)
+        if self.cause_code is not None and type(self.cause_code) is not str:
+            raise TypeError('Delegated lookup codes require text.')
+
+    @property
+    def severity(self) -> TypeValidationSeverity:
+        return TypeValidationSeverity.ERROR
+
+
+def _symbol_order(symbol: SemanticSymbol) -> tuple:
+    return (symbol.reference.element_id.value, symbol.reference.version, str(symbol.qualified_name), symbol.kind.value, '' if symbol.path is None else str(symbol.path))
+
+
+def _symbol_diagnostic(code: NamespaceResolutionFailure, message: str, context: SemanticContextRef, candidates: tuple[SemanticSymbol, ...]) -> NamespaceResolutionDiagnostic:
+    candidates = tuple(sorted(set(candidates), key=_symbol_order))
+    paths = tuple(sorted({s.path for s in candidates if s.path is not None}, key=str))
+    return NamespaceResolutionDiagnostic(code, message, context, candidates=candidates, path=None if not paths else paths[0], related_paths=paths[1:])
+
+
+class NamespaceEnvironmentError(ValueError):
+    def __init__(self, diagnostics: tuple[NamespaceResolutionDiagnostic, ...]) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not NamespaceResolutionDiagnostic for d in diagnostics):
+            raise TypeError('Environment construction errors require nonempty typed diagnostics.')
+        self.diagnostics = diagnostics
+        super().__init__('Namespace visibility snapshot violates intrinsic invariants.')
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceResolutionEnvironment:
+    """Single-context explicit visibility; no live lookup, authorization or globals.
+
+    Local/visible symbols have equal standing. Unqualified names search current
+    namespace plus explicit search_namespaces; none shadows another. Qualified
+    names search exactly their namespace among supplied symbols.
+    """
+    context: SemanticContextRef
+    current_namespace: Namespace
+    local_symbols: tuple[SemanticSymbol, ...] = ()
+    visible_symbols: tuple[SemanticSymbol, ...] = ()
+    aliases: tuple[NamespaceAlias, ...] = ()
+    search_namespaces: tuple[Namespace, ...] = ()
+    _names: _Mapping[QualifiedName, tuple[SemanticSymbol, ...]] = _dataclass_field(init=False, repr=False, compare=False, hash=False)
+    _identities: _Mapping[SemanticElementId, tuple[SemanticSymbol, ...]] = _dataclass_field(init=False, repr=False, compare=False, hash=False)
+    _aliases: _Mapping[Namespace, NamespaceAlias] = _dataclass_field(init=False, repr=False, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId or type(self.current_namespace) is not Namespace:
+            raise TypeError('Environment requires explicit canonical context and current namespace.')
+        local = _ordered(self.local_symbols, SemanticSymbol)
+        visible = _ordered(self.visible_symbols, SemanticSymbol)
+        aliases = tuple(sorted(_ordered(self.aliases, NamespaceAlias), key=lambda a: (a.alias.value, a.target.value, '' if a.path is None else str(a.path))))
+        search = tuple(sorted(set((self.current_namespace, *_ordered(self.search_namespaces, Namespace))), key=str))
+        symbols = tuple(sorted(set((*local, *visible)), key=_symbol_order))
+        diagnostics: list[NamespaceResolutionDiagnostic] = []
+        exact: dict[ElementVersionRef, SemanticSymbol] = {}
+        kinds: dict[SemanticElementId, SemanticSymbol] = {}
+        ownership: dict[QualifiedName, SemanticSymbol] = {}
+        names: dict[QualifiedName, list[SemanticSymbol]] = {}
+        identities: dict[SemanticElementId, list[SemanticSymbol]] = {}
+        for symbol in symbols:
+            if symbol.context != self.context:
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.CONTEXT_MISMATCH, 'Visible symbol belongs to a different semantic context; cross-context lookup is not supported in v0.', self.context, (symbol,)))
+                continue
+            previous = exact.get(symbol.reference)
+            if previous is not None and (previous.qualified_name != symbol.qualified_name or previous.kind != symbol.kind):
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.SYMBOL_COLLISION, 'One exact identity/version has conflicting symbol name or kind.', self.context, (previous, symbol)))
+            first_kind = kinds.get(symbol.reference.element_id)
+            if first_kind is not None and first_kind.kind != symbol.kind:
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.SYMBOL_COLLISION, 'A stable identity cannot designate conflicting semantic kinds in this visibility snapshot.', self.context, (first_kind, symbol)))
+            owner = ownership.get(symbol.qualified_name)
+            if owner is not None and owner.reference.element_id != symbol.reference.element_id:
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.SYMBOL_COLLISION, 'Qualified-name ownership conflicts across explicitly visible identities/versions.', self.context, (owner, symbol)))
+            exact.setdefault(symbol.reference, symbol)
+            kinds.setdefault(symbol.reference.element_id, symbol)
+            ownership.setdefault(symbol.qualified_name, symbol)
+            names.setdefault(symbol.qualified_name, []).append(symbol)
+            identities.setdefault(symbol.reference.element_id, []).append(symbol)
+        alias_index: dict[Namespace, NamespaceAlias] = {}
+        for alias in aliases:
+            previous = alias_index.get(alias.alias)
+            if previous is not None and previous.target != alias.target:
+                paths = tuple(sorted({a.path for a in (previous, alias) if a.path is not None}, key=str))
+                diagnostics.append(NamespaceResolutionDiagnostic(NamespaceResolutionFailure.ALIAS_COLLISION, f'Alias {alias.alias} has conflicting concrete targets {previous.target} and {alias.target}.', self.context, path=None if not paths else paths[0], related_paths=paths[1:]))
+            alias_index.setdefault(alias.alias, alias)
+        if diagnostics:
+            raise NamespaceEnvironmentError(tuple(diagnostics))
+        object.__setattr__(self, 'local_symbols', tuple(sorted(set(local), key=_symbol_order)))
+        object.__setattr__(self, 'visible_symbols', tuple(sorted(set(visible), key=_symbol_order)))
+        object.__setattr__(self, 'aliases', tuple(alias_index.values()))
+        object.__setattr__(self, 'search_namespaces', search)
+        object.__setattr__(self, '_names', _MappingProxyType({k: tuple(v) for k, v in names.items()}))
+        object.__setattr__(self, '_identities', _MappingProxyType({k: tuple(v) for k, v in identities.items()}))
+        object.__setattr__(self, '_aliases', _MappingProxyType(alias_index))
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceEnvironmentResult:
+    environment: NamespaceResolutionEnvironment | None
+    diagnostics: tuple[NamespaceResolutionDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, NamespaceResolutionDiagnostic))
+        if (self.environment is None) != bool(self.diagnostics) or self.environment is not None and type(self.environment) is not NamespaceResolutionEnvironment:
+            raise ValueError('Environment result must contain a complete snapshot or nonempty failure diagnostics.')
+
+    @property
+    def is_success(self) -> bool:
+        return self.environment is not None
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceEnvironmentFactory:
+    def create(self, context: SemanticContextRef, current_namespace: Namespace, local_symbols: tuple[SemanticSymbol, ...] = (), visible_symbols: tuple[SemanticSymbol, ...] = (), aliases: tuple[NamespaceAlias, ...] = (), search_namespaces: tuple[Namespace, ...] = ()) -> NamespaceEnvironmentResult:
+        try:
+            return NamespaceEnvironmentResult(NamespaceResolutionEnvironment(context, current_namespace, local_symbols, visible_symbols, aliases, search_namespaces))
+        except NamespaceEnvironmentError as error:
+            return NamespaceEnvironmentResult(None, error.diagnostics)
+
+
+@_dataclass(frozen=True, slots=True)
+class ResolvedSemanticTarget:
+    """Identity or explicit exact coordinate, never an implicitly chosen version.
+
+    Identity lookups can have several explicitly recorded names over versions.
+    Returning all matching names avoids choosing a historical/current name.
+    """
+    reference: ElementRef | ElementVersionRef
+    context: SemanticContextRef
+    kind: SemanticElementKind
+    qualified_names: tuple[QualifiedName, ...]
+
+    def __post_init__(self) -> None:
+        _resolution_reference(self.reference)
+        if type(self.context) is not SemanticContextRef or type(self.context.context_id) is not SemanticElementId or type(self.kind) is not SemanticElementKind:
+            raise TypeError('Resolved target requires existing context and kind values.')
+        names = _ordered(self.qualified_names, QualifiedName)
+        if not names or any(type(n.namespace) is not Namespace for n in names):
+            raise TypeError('Resolved target must retain nonempty canonical matching qualified names.')
+        object.__setattr__(self, 'qualified_names', tuple(sorted(set(names), key=str)))
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceResolutionResult:
+    target: ResolvedSemanticTarget | None
+    diagnostics: tuple[NamespaceResolutionDiagnostic, ...] = ()
+    path: AuthoringSchemaPath | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, NamespaceResolutionDiagnostic))
+        if (self.target is None) != bool(self.diagnostics) or self.target is not None and type(self.target) is not ResolvedSemanticTarget:
+            raise ValueError('Resolution requires one complete target or nonempty failure diagnostics.')
+        _resolution_path(self.path)
+
+    @property
+    def is_success(self) -> bool:
+        return self.target is not None
+
+
+def _resolution_failure(request: NamespaceResolutionRequest, code: NamespaceResolutionFailure, message: str, candidates: tuple[SemanticSymbol, ...] = (), exact_version: SemanticVersion | None = None) -> NamespaceResolutionResult:
+    ordered = tuple(sorted(set(candidates), key=_symbol_order))
+    related = tuple(sorted({s.path for s in ordered if s.path is not None and s.path != request.path}, key=str))
+    diagnostic = NamespaceResolutionDiagnostic(code, message, request.context, request.expression, exact_version if exact_version is not None else request.exact_version, ordered, request.path, related)
+    return NamespaceResolutionResult(None, (diagnostic,), request.path)
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceResolver:
+    """Stateless scoped name resolution. No semantic construction or traversal."""
+    def resolve(self, request: NamespaceResolutionRequest, environment: NamespaceResolutionEnvironment) -> NamespaceResolutionResult:
+        if type(request) is not NamespaceResolutionRequest:
+            return NamespaceResolutionResult(None, (NamespaceResolutionDiagnostic(NamespaceResolutionFailure.INVALID_EXPRESSION, 'Supply a typed resolution request.'),))
+        if type(environment) is not NamespaceResolutionEnvironment:
+            return _resolution_failure(request, NamespaceResolutionFailure.INVALID_ENVIRONMENT, 'Supply an immutable explicit namespace environment.')
+        if request.context != environment.context:
+            return _resolution_failure(request, NamespaceResolutionFailure.CONTEXT_MISMATCH, 'Request context differs from the explicit visibility context.')
+        expression = request.expression
+        exact = request.exact_version
+        if type(expression) is AuthoringVersionExpression:
+            if exact is not None and exact != expression.reference.version:
+                return _resolution_failure(request, NamespaceResolutionFailure.INVALID_EXPRESSION, 'The authored exact coordinate conflicts with the requested exact version.')
+            exact = expression.reference.version
+        if type(expression) in (AuthoringIdentityExpression, AuthoringVersionExpression):
+            # No qualified-name re-resolution. Visibility/kind/version safeguards
+            # still apply to the identity explicitly supplied by the author.
+            candidates = environment._identities.get(expression.reference.element_id, ())
+        elif type(expression) is AliasQualifiedNameExpression:
+            alias = environment._aliases.get(expression.alias)
+            if alias is None:
+                return _resolution_failure(request, NamespaceResolutionFailure.ALIAS_NOT_FOUND, 'Alias is not declared in this explicit environment.')
+            name = QualifiedName.create(alias.target, expression.local_name)
+            candidates = environment._names.get(name, ())
+        elif '.' in expression.name:
+            candidates = environment._names.get(QualifiedName.parse(expression.name), ())
+        else:
+            candidates = tuple(symbol for namespace in environment.search_namespaces for symbol in environment._names.get(QualifiedName.create(namespace, expression.name), ()))
+        candidates = tuple(sorted(set(candidates), key=_symbol_order))
+        if not candidates:
+            return _resolution_failure(request, NamespaceResolutionFailure.NAME_NOT_FOUND, 'No explicitly visible symbol designates the requested name or identity.', exact_version=exact)
+        identities = {s.reference.element_id for s in candidates}
+        if len(identities) != 1:
+            return _resolution_failure(request, NamespaceResolutionFailure.AMBIGUOUS_NAME, 'The permitted name scope designates multiple stable semantic identities; neither kind nor version requirements choose an identity.', candidates, exact)
+        if request.expected_kind is not None and candidates[0].kind != request.expected_kind:
+            return _resolution_failure(request, NamespaceResolutionFailure.KIND_MISMATCH, 'Resolved identity has a different declared semantic kind.', candidates, exact)
+        if exact is not None:
+            selected = tuple(s for s in candidates if s.reference.version == exact)
+            if not selected:
+                return _resolution_failure(request, NamespaceResolutionFailure.VERSION_NOT_FOUND, 'The explicitly requested exact version is not visible under this expression.', candidates, exact)
+            candidates = selected
+        identity = candidates[0].reference.element_id
+        reference = ElementRef(identity) if exact is None else ElementVersionRef(identity, exact)
+        target = ResolvedSemanticTarget(reference, request.context, candidates[0].kind, tuple(s.qualified_name for s in candidates))
+        return NamespaceResolutionResult(target, (), request.path)
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceSymbolSnapshotResult:
+    symbols: tuple[SemanticSymbol, ...] = ()
+    diagnostics: tuple[NamespaceResolutionDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'symbols', _ordered(self.symbols, SemanticSymbol))
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, NamespaceResolutionDiagnostic))
+        if self.diagnostics and self.symbols:
+            raise ValueError('Failed symbol capture cannot expose a partial successful snapshot.')
+
+    @property
+    def is_success(self) -> bool:
+        return not self.diagnostics
+
+
+@_dataclass(frozen=True, slots=True)
+class TypeLookupSymbolAdapter:
+    """Snapshot only explicitly selected identities from actual TYPE-07 TypeLookup.
+
+    Use a caller-bound exact view for multi-version registries; this adapter does
+    not enumerate a global registry or bind/select versions itself. Environment
+    stores copied symbols, never the live port. Non-type hosts are rejected.
+    """
+    lookup: TypeLookup
+
+    def __post_init__(self) -> None:
+        if not callable(getattr(self.lookup, 'find', None)):
+            raise TypeError('Symbol adapter requires the existing read-only TypeLookup port.')
+
+    def capture(self, context: SemanticContextRef, references: tuple[ElementRef, ...]) -> NamespaceSymbolSnapshotResult:
+        if type(context) is not SemanticContextRef or type(context.context_id) is not SemanticElementId:
+            raise TypeError('Symbol capture requires an explicit canonical context.')
+        references = _ordered(references, ElementRef)
+        for reference in references:
+            _resolution_reference(reference)
+        symbols: list[SemanticSymbol] = []
+        diagnostics: list[NamespaceResolutionDiagnostic] = []
+        for reference in sorted(set(references), key=lambda r: r.element_id.value):
+            try:
+                host = self.lookup.find(reference)
+            except TypeRegistryAmbiguityError:
+                diagnostics.append(NamespaceResolutionDiagnostic(NamespaceResolutionFailure.UNBOUND_LOOKUP_VERSION, 'TYPE-07 lookup has multiple versions; the caller must supply an explicitly bound view.', context, AuthoringIdentityExpression(reference), cause_code='TYPE-REG-006'))
+                continue
+            if host is None:
+                diagnostics.append(NamespaceResolutionDiagnostic(NamespaceResolutionFailure.NAME_NOT_FOUND, 'Explicitly selected lookup identity is absent.', context, AuthoringIdentityExpression(reference)))
+                continue
+            values = tuple(getattr(host, name, None) for name in ('id', 'qualified_name', 'context', 'kind', 'version'))
+            expected = (SemanticElementId, QualifiedName, SemanticContextRef, SemanticElementKind, SemanticVersion)
+            if any(type(v) is not t for v, t in zip(values, expected)) or type(values[1].namespace) is not Namespace or type(values[2].context_id) is not SemanticElementId or values[0] != reference.element_id:
+                diagnostics.append(NamespaceResolutionDiagnostic(NamespaceResolutionFailure.INVALID_ENVIRONMENT, 'TypeLookup returned an invalid or mismatched semantic identity snapshot.', context, AuthoringIdentityExpression(reference)))
+                continue
+            symbol = SemanticSymbol(values[2], values[1], ElementVersionRef(values[0], values[4]), values[3])
+            if symbol.context != context:
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.CONTEXT_MISMATCH, 'Selected lookup symbol belongs to another context.', context, (symbol,)))
+            elif symbol.kind != SemanticElementKinds.TYPE_DEFINITION:
+                diagnostics.append(_symbol_diagnostic(NamespaceResolutionFailure.KIND_MISMATCH, 'TYPE-07 adapter contributes only type-definition symbols.', context, (symbol,)))
+            else:
+                symbols.append(symbol)
+        return NamespaceSymbolSnapshotResult((), diagnostics) if diagnostics else NamespaceSymbolSnapshotResult(tuple(sorted(symbols, key=_symbol_order)))
+
+
+def local_authoring_symbols(document: AuthoringModelDocument) -> NamespaceSymbolSnapshotResult:
+    """Project declared identities before field binding; no definitions constructed."""
+    if type(document) is not AuthoringModelDocument or document.schema_version != AUTHORING_SCHEMA_VERSION:
+        return NamespaceSymbolSnapshotResult((), (NamespaceResolutionDiagnostic(NamespaceResolutionFailure.INVALID_ENVIRONMENT, 'Supply an existing supported authoring document for local declaration visibility.'),))
+    namespace = Namespace.parse(document.namespace)
+    symbols = tuple(SemanticSymbol(document.context, QualifiedName.create(namespace, d.name), ElementVersionRef(SemanticElementId.parse(d.id), SemanticVersion.parse(d.version)), SemanticElementKinds.TYPE_DEFINITION, AuthoringSchemaPath(('definitions', i))) for i, d in enumerate(document.definitions))
+    return NamespaceSymbolSnapshotResult(tuple(sorted(symbols, key=_symbol_order)))
+
+
+@_dataclass(frozen=True, slots=True)
+class NamespaceFieldBindingResult:
+    binding: ResolvedFieldBinding | None
+    diagnostics: tuple[NamespaceResolutionDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'diagnostics', _ordered(self.diagnostics, NamespaceResolutionDiagnostic))
+        if (self.binding is None) != bool(self.diagnostics) or self.binding is not None and type(self.binding) is not ResolvedFieldBinding:
+            raise ValueError('Field binding result contains an existing binding or failure diagnostics.')
+
+    @property
+    def is_success(self) -> bool:
+        return self.binding is not None
+
+
+def bind_namespace_target(result: NamespaceResolutionResult, facet_index: int, field_index: int, field_id: FieldId) -> NamespaceFieldBindingResult:
+    """Minimal MOD-05 bridge, not complete model/reference binding orchestration.
+
+    Exact pins stay exact. Current Canonicalizer will reject them until TYPE-05
+    supports that representation; this bridge must not silently downgrade them.
+    """
+    if type(result) is not NamespaceResolutionResult:
+        raise TypeError('Binding requires an actual namespace-resolution result.')
+    _coordinate(facet_index)
+    _coordinate(field_index)
+    if type(field_id) is not FieldId:
+        raise TypeError('Binding requires a supplied stable FieldId.')
+    if result.target is None:
+        return NamespaceFieldBindingResult(None, result.diagnostics)
+    if result.target.kind != SemanticElementKinds.TYPE_DEFINITION:
+        diagnostic = NamespaceResolutionDiagnostic(NamespaceResolutionFailure.KIND_MISMATCH, 'MOD-05 semantic field binding requires a declared type-definition target.', result.target.context, path=result.path)
+        return NamespaceFieldBindingResult(None, (diagnostic,))
+    return NamespaceFieldBindingResult(ResolvedFieldBinding(facet_index, field_index, field_id, result.target.reference))
+
+
+__all__ += [
+    'SemanticSymbol', 'NamespaceAlias', 'AliasQualifiedNameExpression',
+    'NamespaceNameExpression', 'NamespaceResolutionRequest',
+    'NamespaceResolutionEnvironment', 'NamespaceEnvironmentFactory',
+    'NamespaceEnvironmentResult', 'NamespaceEnvironmentError',
+    'NamespaceResolver', 'ResolvedSemanticTarget', 'NamespaceResolutionResult',
+    'NamespaceResolutionFailure', 'NamespaceResolutionDiagnostic',
+    'NamespaceSymbolSnapshotResult', 'TypeLookupSymbolAdapter',
+    'local_authoring_symbols', 'NamespaceFieldBindingResult', 'bind_namespace_target',
 ]

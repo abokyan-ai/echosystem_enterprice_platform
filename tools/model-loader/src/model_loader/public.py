@@ -9,6 +9,7 @@ from model_authoring.public import (
     AuthoringModelDocument, AuthoringSchemaPath, AuthoringSchemaDiagnostic,
     AuthoringSchemaValidator,
     CanonicalizationResult, CanonicalizationDiagnostic, CanonicalSourceAssociation,
+    NamespaceResolutionResult, NamespaceResolutionDiagnostic,
 )
 
 MODULE_NAME = 'model-loader'
@@ -984,3 +985,65 @@ def locate_canonicalization(result: CanonicalizationResult, loaded: LoadedAuthor
 
 
 __all__ += ['LocatedCanonicalSourceAssociation', 'LocatedCanonicalizationDiagnostic', 'CanonicalizationSourceLocations', 'locate_canonicalization']
+
+
+# MOD-06 location presentation remains outside pure namespace resolution.
+@dataclass(frozen=True, slots=True)
+class LocatedNamespaceResolutionDiagnostic:
+    diagnostic: NamespaceResolutionDiagnostic
+    location: SourceLocation | None
+    related_locations: tuple[SourceLocation | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostic) is not NamespaceResolutionDiagnostic or self.location is not None and type(self.location) is not SourceLocation:
+            raise TypeError('Located namespace diagnostics require typed domain/location values.')
+        if type(self.related_locations) not in (tuple, list) or any(v is not None and type(v) is not SourceLocation for v in self.related_locations):
+            raise TypeError('Related locations require a typed immutable sequence, allowing missing nodes.')
+        values = tuple(self.related_locations)
+        if len(values) != len(self.diagnostic.related_paths):
+            raise ValueError('Related location positions must preserve every supplied diagnostic path.')
+        object.__setattr__(self, 'related_locations', values)
+
+
+@dataclass(frozen=True, slots=True)
+class NamespaceResolutionSourceLocations:
+    result: NamespaceResolutionResult
+    expression_location: SourceLocation | None
+    diagnostics: tuple[LocatedNamespaceResolutionDiagnostic, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.result) is not NamespaceResolutionResult or self.expression_location is not None and type(self.expression_location) is not SourceLocation:
+            raise TypeError('Namespace location sidecars require existing typed results and locations.')
+        if type(self.diagnostics) not in (tuple, list) or any(type(d) is not LocatedNamespaceResolutionDiagnostic for d in self.diagnostics):
+            raise TypeError('Located namespace diagnostics require an immutable typed sequence.')
+        diagnostics = tuple(self.diagnostics)
+        if tuple(d.diagnostic for d in diagnostics) != self.result.diagnostics:
+            raise ValueError('Location presentation must retain original namespace diagnostics.')
+        object.__setattr__(self, 'diagnostics', diagnostics)
+
+
+def locate_namespace_diagnostics(diagnostics: tuple[NamespaceResolutionDiagnostic, ...], loaded: LoadedAuthoringDocument) -> tuple[LocatedNamespaceResolutionDiagnostic, ...]:
+    """Present resolution/environment/capture/bridge diagnostics uniformly."""
+    if type(diagnostics) not in (tuple, list) or any(type(d) is not NamespaceResolutionDiagnostic for d in diagnostics) or type(loaded) is not LoadedAuthoringDocument:
+        raise TypeError('Location presentation requires typed namespace diagnostics and a loaded snapshot.')
+    def location(path: AuthoringSchemaPath | None) -> SourceLocation | None:
+        return None if loaded.locations is None or path is None else loaded.locations.find(SourceNodePath.from_authoring_path(path))
+    return tuple(LocatedNamespaceResolutionDiagnostic(d, location(d.path), tuple(location(p) for p in d.related_paths)) for d in diagnostics)
+
+
+def locate_namespace_resolution(result: NamespaceResolutionResult, loaded: LoadedAuthoringDocument) -> NamespaceResolutionSourceLocations:
+    """Attach actual MOD-03 locations by exact path without loading/resolution.
+
+    Caller pairs the original loaded document with request and declaration paths.
+    External registry symbols normally have no document path. Cross-document
+    provenance is not inferred. Missing path/index/node remains None.
+    """
+    if type(result) is not NamespaceResolutionResult or type(loaded) is not LoadedAuthoringDocument:
+        raise TypeError('Location presentation requires typed resolution and loading results.')
+    def location(path: AuthoringSchemaPath | None) -> SourceLocation | None:
+        return None if loaded.locations is None or path is None else loaded.locations.find(SourceNodePath.from_authoring_path(path))
+    diagnostics = locate_namespace_diagnostics(result.diagnostics, loaded)
+    return NamespaceResolutionSourceLocations(result, location(result.path), diagnostics)
+
+
+__all__ += ['LocatedNamespaceResolutionDiagnostic', 'NamespaceResolutionSourceLocations', 'locate_namespace_resolution', 'locate_namespace_diagnostics']
