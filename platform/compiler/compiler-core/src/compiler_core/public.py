@@ -1,5 +1,5 @@
 """CMP-01 deterministic compiler foundation; no concrete generators or hosting."""
-from dataclasses import dataclass, field, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from collections import Counter, deque
 from enum import Enum
 from typing import Protocol, Mapping
@@ -83,6 +83,8 @@ class CompilationFailure(Enum):
     TYPE_IR_INPUT_MISMATCH = 'CMP-026'
     TYPE_IR_IDENTITY_COVERAGE = 'CMP-027'
     TYPE_IR_INVALID_PAYLOAD = 'CMP-028'
+    NONDETERMINISTIC_CONFIGURATION = 'CMP-029'
+    CONFIGURATION_CHANGED = 'CMP-030'
 
 
 def _phase_id(value: str) -> None:
@@ -419,10 +421,12 @@ class CompilationResult:
 class ModelCompiler:
     additional_phases: tuple[CompilationPhase, ...] = ()
     _descriptors: tuple[CompilationPhaseDescriptor, ...] = field(init=False, repr=False)
+    _configurations: tuple[tuple[tuple[str, object], ...], ...] = field(init=False, repr=False)
+    _phase_types: tuple[type, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.additional_phases) not in (tuple, list):
-            raise TypeError('Compiler composition requires explicit ordered phase implementations.')
+            _configuration_reject('Compiler composition requires an explicit ordered finite phase sequence; unordered/live collections are unsupported.')
         phases = tuple(self.additional_phases)
         descriptors = [CompilationPreparationPhase().descriptor]
         for phase in phases:
@@ -432,17 +436,33 @@ class ModelCompiler:
             descriptors.append(descriptor)
         ids = [d.id for d in descriptors]
         if len(set(ids)) != len(ids):
-            raise ValueError('Duplicate phases cannot replace mandatory preparation.')
+            _configuration_reject('Duplicate phases cannot replace mandatory preparation.')
         positions = {id: i for i, id in enumerate(ids)}
         for descriptor in descriptors:
             if any(p in positions and positions[p] >= positions[descriptor.id] for p in descriptor.prerequisites):
-                raise ValueError('Configured prerequisites must precede their consumer; no dependency scheduler/reordering.')
+                _configuration_reject('Configured prerequisites must precede their consumer; no dependency scheduler/reordering.', descriptor.id)
         object.__setattr__(self, 'additional_phases', phases)
+        configurations = tuple(_phase_configuration(phase, descriptor) for phase, descriptor in zip((CompilationPreparationPhase(), *phases), descriptors))
         object.__setattr__(self, '_descriptors', tuple(descriptors))
+        object.__setattr__(self, '_configurations', configurations)
+        object.__setattr__(self, '_phase_types', tuple(type(p) for p in self.phases))
 
     @property
     def phases(self) -> tuple[CompilationPhase, ...]:
         return (CompilationPreparationPhase(), *self.additional_phases)
+
+    def _configuration_diagnostics(self) -> tuple[CompilationDiagnostic, ...]:
+        diagnostics = []
+        if type(self.additional_phases) is not tuple or len(self.additional_phases) + 1 != len(self._descriptors):
+            return (_configuration_diagnostic(CompilationFailure.CONFIGURATION_CHANGED, 'Captured compiler phase composition changed after construction.'),)
+        for phase, descriptor, captured, implementation in zip(self.phases, self._descriptors, self._configurations, self._phase_types):
+            try:
+                current = _phase_configuration(phase, descriptor)
+            except CompilationConfigurationError:
+                current = None
+            if type(phase) is not implementation or current != captured:
+                diagnostics.append(_configuration_diagnostic(CompilationFailure.CONFIGURATION_CHANGED, 'Configured phase descriptor or immutable options changed after compiler construction.', descriptor.id))
+        return tuple(diagnostics)
 
     def compile(self, request: CompilationRequest) -> CompilationResult:
         if type(request) is not CompilationRequest:
@@ -469,6 +489,12 @@ class ModelCompiler:
         if request.context.target not in (PREPARATION_TARGET, BUILD_TARGET):
             diagnostics.append(CompilationDiagnostic(CompilationFailure.UNSUPPORTED_TARGET, 'Unknown target has no approved compiler objective/capability.', TypeValidationSeverity.WARNING))
             gate_status = gate_status or CompilationStatus.INCOMPLETE
+        # Audit the entire captured composition before any phase executes.
+        if gate_status is None:
+            changed = self._configuration_diagnostics()
+            if changed:
+                diagnostics.extend(changed)
+                gate_status = CompilationStatus.FAILED
         outcomes = []
         state = CompilationState()
         completed = set()
@@ -490,6 +516,17 @@ class ModelCompiler:
             if type(result) is not CompilationPhaseResult or any(d.phase_id is not None and d.phase_id != descriptor.id or d.association is not None and d.association.phase_id is not None and d.association.phase_id != descriptor.id for d in result.diagnostics):
                 raise TypeError('Phase implementation violated its result/diagnostic origin contract.')
             diagnostics.extend(result.diagnostics)
+            # Contract drift cannot be committed, even when output appears complete.
+            changed = self._configuration_diagnostics()
+            if changed:
+                diagnostics.extend(changed)
+                current = tuple(d for d in changed if d.phase_id == descriptor.id)
+                if not current:
+                    current = (_configuration_diagnostic(CompilationFailure.CONFIGURATION_CHANGED, 'Executing phase invalidated captured compiler configuration.', descriptor.id),)
+                    diagnostics.extend(current)
+                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.FAILED, (*result.diagnostics, *current), 'Compiler configuration changed during execution.', executed=True))
+                blocker, status = descriptor.id, CompilationStatus.FAILED
+                continue
             if result.status is not CompilationPhaseStatus.COMPLETED:
                 phase_diagnostics = result.diagnostics
                 if result.status is CompilationPhaseStatus.FAILED and not any(d.severity is TypeValidationSeverity.ERROR for d in phase_diagnostics):
@@ -574,6 +611,8 @@ _LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({
     CompilationFailure.TYPE_IR_INPUT_MISMATCH: CompilationDiagnosticOrigin.PHASE,
     CompilationFailure.TYPE_IR_IDENTITY_COVERAGE: CompilationDiagnosticOrigin.PHASE,
     CompilationFailure.TYPE_IR_INVALID_PAYLOAD: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.NONDETERMINISTIC_CONFIGURATION: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.CONFIGURATION_CHANGED: CompilationDiagnosticOrigin.ORCHESTRATOR,
 })
 
 
@@ -1064,7 +1103,7 @@ class TypeCompilerPass:
         identities = tuple(self.identities)
         if len({i.definition for i in identities}) != len(identities):
             raise ValueError('A source type cannot receive ambiguous representation assignments.')
-        object.__setattr__(self, 'identities', identities)
+        object.__setattr__(self, 'identities', tuple(sorted(identities, key=lambda i: (i.definition.element_id.value, i.definition.version.major, i.definition.version.minor, i.definition.version.patch))))
 
     def execute(self, request: CompilationRequest, state: CompilationState) -> CompilationPhaseResult:
         try:
@@ -1141,3 +1180,131 @@ __all__ += ['CompiledTypeReferenceIR', 'CompiledFieldConstraintsIR', 'CompiledFi
             'CompiledTypeIR', 'COMPILED_TYPE_IR_PHASE', 'TypeLoweringResult',
             'CompiledTypeLowerer', 'CompiledTypeIRIdentityBinding', 'CompiledTypeLoweringPhase',
             'TypeCompilerPass', 'TYPE_COMPILER_PASS_PHASE']
+
+
+# CMP-06: narrow immutable phase configuration, not a general metadata framework.
+class CompilationConfigurationError(ValueError):
+    def __init__(self, diagnostic: CompilationDiagnostic) -> None:
+        self.diagnostics = (diagnostic,)
+        super().__init__(diagnostic.message)
+
+
+def _configuration_diagnostic(code: CompilationFailure, message: str, phase_id: str | None = None) -> CompilationDiagnostic:
+    association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ORCHESTRATOR, phase_id)
+    return CompilationDiagnostic(code, message, TypeValidationSeverity.ERROR, phase_id, association=association)
+
+
+def _configuration_reject(message: str, phase_id: str | None = None) -> None:
+    raise CompilationConfigurationError(_configuration_diagnostic(CompilationFailure.NONDETERMINISTIC_CONFIGURATION, message, phase_id))
+
+
+def _configuration_value(value: object) -> bool:
+    # Closed actual immutable values; no arbitrary recursive object traversal.
+    if type(value) in (type(None), bool, int, str, bytes, CompilationPhaseDescriptor,
+                       CompiledTypeIRIdentityBinding, SemanticIRId, CompilationTargetId,
+                       ElementVersionRef, SemanticVersion, SemanticElementId,
+                       SemanticContextRef, QualifiedName, FieldId, FieldName,
+                       FieldConstraintSet, PrimitiveTypeRef, SemanticTypeRef):
+        return True
+    if type(value) in (CompilationCapability, CompilationPhaseStatus, CompilationStatus, SemanticIRPayloadKind, SemanticIRSchemaVersion):
+        return True
+    if type(value) is tuple:
+        return all(_configuration_value(v) for v in value)
+    return False
+
+
+def _phase_configuration(phase: CompilationPhase, descriptor: CompilationPhaseDescriptor) -> tuple[tuple[str, object], ...]:
+    if not is_dataclass(phase) or isinstance(phase, type) or not phase.__dataclass_params__.frozen:
+        _configuration_reject('Configured phases must be frozen dataclass implementations with explicit immutable options.', descriptor.id)
+    if phase.descriptor != descriptor:
+        _configuration_reject('Configured phase descriptor differs from its captured declaration.', descriptor.id)
+    values = tuple((f.name, getattr(phase, f.name)) for f in fields(phase))
+    if any(not _configuration_value(value) for _, value in values):
+        _configuration_reject('Phase options require approved immutable compiler values or immutable value sequences; live containers/services are unsupported.', descriptor.id)
+    return values
+
+
+def _diagnostic_semantics(diagnostic: CompilationDiagnostic) -> tuple[object, ...]:
+    association = diagnostic.association
+    targets = None if association is None else (
+        association.origin, association.phase_id, association.semantic_target,
+        association.artifact_target, association.related_targets,
+        association.semantic_context, association.ir_identity,
+    )
+    # Message and source paths are presentation, never diagnostic ordering keys.
+    return (diagnostic.code, diagnostic.severity, diagnostic.phase_id,
+            diagnostic.reference, diagnostic.cause_code, targets)
+
+
+def _outcome_semantics(outcome: CompilationPhaseOutcome) -> tuple[object, ...]:
+    return (outcome.descriptor, outcome.status, outcome.executed,
+            tuple(_diagnostic_semantics(d) for d in outcome.diagnostics))
+
+
+@dataclass(frozen=True, slots=True)
+class CompilationResultEquivalence:
+    """Supported semantic comparison only; neither evidence authorization nor bytes."""
+    def requests(self, left: CompilationRequest, right: CompilationRequest) -> bool:
+        if type(left) is not CompilationRequest or type(right) is not CompilationRequest:
+            raise TypeError('Input comparison requires actual compiler requests.')
+        for request in (left, right):
+            evidence = request.validation_evidence
+            if evidence is None or evidence.status is not ModelValidationStatus.VALID or evidence.readiness is not CompilationReadiness.READY or evidence.validated_model is not request.canonical_model or request.canonical_model.scope != request.context.scope or request.context.target not in (PREPARATION_TARGET, BUILD_TARGET):
+                return False
+        return left.context == right.context and left.canonical_model.same_supported_content(right.canonical_model)
+
+    def configurations(self, left: ModelCompiler, right: ModelCompiler) -> bool:
+        if type(left) is not ModelCompiler or type(right) is not ModelCompiler:
+            raise TypeError('Configuration comparison requires actual compiler compositions.')
+        if left._configuration_diagnostics() or right._configuration_diagnostics():
+            return False
+        # Same in-process implementation classes, not a package version identity.
+        return (tuple(type(p) for p in left.phases) == tuple(type(p) for p in right.phases)
+                and left._descriptors == right._descriptors and left._configurations == right._configurations)
+
+    def ir_envelopes(self, left: tuple[SemanticIREnvelope, ...], right: tuple[SemanticIREnvelope, ...]) -> bool:
+        left, right = _ir_candidates(left), _ir_candidates(right)
+        if len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            if not self.requests(a.canonical_input.request, b.canonical_input.request):
+                return False
+            if (a.identity, a.schema_version, a.semantic_context, a.payload_kind,
+                a.payload, a.definition_origins, a.model_wide, a.produced_by_phase) != (
+                b.identity, b.schema_version, b.semantic_context, b.payload_kind,
+                b.payload, b.definition_origins, b.model_wide, b.produced_by_phase):
+                return False
+        return True
+
+    def results(self, left: CompilationResult, right: CompilationResult) -> bool:
+        """Compare compiler result observables; does not establish input equivalence."""
+        if type(left) is not CompilationResult or type(right) is not CompilationResult:
+            raise TypeError('Result comparison requires actual compiler results.')
+        if left.artifacts.artifacts or right.artifacts.artifacts:
+            raise ValueError('Concrete artifact payload equivalence is not implemented; metadata equality is insufficient.')
+        if (left.status, left.target, left.diagnostic_context.semantic_context, tuple(_diagnostic_semantics(d) for d in left.diagnostics),
+            tuple(_outcome_semantics(o) for o in left.phase_outcomes)) != (
+            right.status, right.target, right.diagnostic_context.semantic_context, tuple(_diagnostic_semantics(d) for d in right.diagnostics),
+            tuple(_outcome_semantics(o) for o in right.phase_outcomes)):
+            return False
+        if left.preparation is None or right.preparation is None:
+            return left.preparation is right.preparation
+        return (left.preparation.context == right.preparation.context
+                and left.preparation.model.same_supported_content(right.preparation.model))
+
+    def states(self, left: CompilationState, right: CompilationState) -> bool:
+        if type(left) is not CompilationState or type(right) is not CompilationState:
+            raise TypeError('State comparison requires actual compiler states.')
+        if left.artifacts.artifacts or right.artifacts.artifacts:
+            raise ValueError('Concrete artifact state equivalence is not implemented.')
+        if tuple(_outcome_semantics(o) for o in left.phase_outcomes) != tuple(_outcome_semantics(o) for o in right.phase_outcomes):
+            return False
+        if left.preparation is None or right.preparation is None:
+            prepared = left.preparation is right.preparation
+        else:
+            prepared = (left.preparation.context == right.preparation.context
+                        and left.preparation.model.same_supported_content(right.preparation.model))
+        return prepared and self.ir_envelopes(left.ir_envelopes, right.ir_envelopes)
+
+
+__all__ += ['CompilationConfigurationError', 'CompilationResultEquivalence']

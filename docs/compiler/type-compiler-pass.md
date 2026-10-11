@@ -43,3 +43,7 @@ Negative Employee variants: valid absent DataFacet fixture yields CMP-022/INCOMP
 ## Verification and stop
 
 [Detailed deferred specification](../../test-archive/CMP-05/CMP-05-deferred-tests.md), [ADR-0036](../architecture/decisions/ADR-0036-type-compiler-pass.md), [implementation/static record](../architecture/cmp05-verification.md). Automated tests created/executed: 0. Static checks are separate from behavioral verification. Stop CMP-05; no CMP-06 implementation.
+
+## CMP-06 — Deterministic Compilation
+
+Original compiler now requires frozen phase implementations with approved immutable options, captures complete configuration/classes and rejects ambiguity/drift with CMP-029/030. Existing type pass normalizes exact binding mappings; supported semantic comparison uses actual canonical/payload equality separately from original request ownership and physical presentation. No new orchestrator/module/dependency/route/ORM/generator/serialization/hash/runtime. [Contract and unexecuted Mini Sales](deterministic-compilation.md). **139** archived scenarios; tests implemented/executed **0**, **DEFERRED / NOT VERIFIED**. Mutable old extension phases need adaptation; unsupported artifact/byte equality remains explicit. Stop CMP-06.
