@@ -1,5 +1,6 @@
 """CMP-01 deterministic compiler foundation; no concrete generators or hosting."""
 from dataclasses import dataclass, field, is_dataclass
+from collections import Counter, deque
 from enum import Enum
 from typing import Protocol, Mapping
 from types import MappingProxyType
@@ -11,6 +12,8 @@ from model_authoring.public import (
     CanonicalSourceAssociation, ModelDiagnosticContext, ModelDiagnosticEntry,
     ModelDiagnosticOrigin, ModelDiagnosticTarget, ModelDiagnosticTargetKind,
     associate_model_diagnostic, CompilationDiagnosticReport, CompilerPhaseDiagnosticView,
+    CompilationDiagnosticOrigin, CompilationDiagnosticDetails, CompilationArtifactDiagnosticView,
+    AuthoringSchemaPath,
 )
 from compiled_contracts.public import CompilationArtifact, CompilationArtifactKey, CompilationArtifactKind
 
@@ -67,6 +70,55 @@ def _phase_id(value: str) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class CompilationArtifactTarget:
+    """Existing artifact identities; no artifact must have been constructed."""
+    key: CompilationArtifactKey | None = None
+    kind: CompilationArtifactKind | None = None
+    target: CompilationTargetId | None = None
+
+    def __post_init__(self) -> None:
+        for value, expected in ((self.key, CompilationArtifactKey), (self.kind, CompilationArtifactKind), (self.target, CompilationTargetId)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Artifact diagnostic association reuses owned typed identifiers.')
+        if self.key is None and self.kind is None and self.target is None:
+            raise ValueError('Provide an actual key/kind or intended compiler target.')
+
+    @property
+    def diagnostic_view(self) -> CompilationArtifactDiagnosticView:
+        return CompilationArtifactDiagnosticView(None if self.key is None else self.key.value, None if self.kind is None else self.kind.value, None if self.target is None else self.target.value)
+
+
+@dataclass(frozen=True, slots=True)
+class CompilationDiagnosticAssociation:
+    origin: CompilationDiagnosticOrigin
+    phase_id: str | None = None
+    semantic_target: ModelDiagnosticTarget | None = None
+    artifact_target: CompilationArtifactTarget | None = None
+    related_targets: tuple[ModelDiagnosticTarget, ...] = ()
+    source_path: AuthoringSchemaPath | None = None
+    related_paths: tuple[AuthoringSchemaPath, ...] = ()
+    semantic_context: SemanticContextRef | None = None
+
+    def __post_init__(self) -> None:
+        if self.artifact_target is not None and type(self.artifact_target) is not CompilationArtifactTarget:
+            raise TypeError('Artifact target must be a bounded association.')
+        CompilationDiagnosticDetails(self.origin, self.phase_id, None if self.artifact_target is None else self.artifact_target.diagnostic_view, self.semantic_context)
+        if self.semantic_target is not None and type(self.semantic_target) is not ModelDiagnosticTarget:
+            raise TypeError('Reuse the existing semantic target; fields keep their owned FieldId.')
+        if self.semantic_target is not None and type(self.semantic_target.reference) is not ElementVersionRef:
+            raise ValueError('Compiler definition association must preserve an exact version.')
+        for name, expected in (('related_targets', ModelDiagnosticTarget), ('related_paths', AuthoringSchemaPath)):
+            values = getattr(self, name)
+            if type(values) not in (tuple, list) or any(type(v) is not expected for v in values):
+                raise TypeError('Related associations are explicit finite ordered typed sequences.')
+            object.__setattr__(self, name, tuple(values))
+        if any(type(t.reference) is not ElementVersionRef for t in self.related_targets):
+            raise ValueError('Related compiler definitions retain exact versions.')
+        if self.source_path is not None and type(self.source_path) is not AuthoringSchemaPath:
+            raise TypeError('Explicit source association requires an existing authoring path.')
+
+
+@dataclass(frozen=True, slots=True)
 class CompilationDiagnostic:
     """Narrow compiler prerequisite/capability seam pending full SK-11."""
     code: CompilationFailure
@@ -75,8 +127,16 @@ class CompilationDiagnostic:
     phase_id: str | None = None
     reference: ElementVersionRef | None = None
     cause_code: str | None = None
+    association: CompilationDiagnosticAssociation | None = None
 
     def __post_init__(self) -> None:
+        if self.association is not None:
+            if type(self.association) is not CompilationDiagnosticAssociation:
+                raise TypeError('Compiler diagnostic association must be explicitly typed.')
+            if self.phase_id is not None and self.phase_id != self.association.phase_id:
+                raise ValueError('Diagnostic and association phase evidence cannot conflict.')
+            if self.reference is not None and self.association.semantic_target is not None and self.reference != self.association.semantic_target.reference:
+                raise ValueError('Diagnostic and association semantic evidence cannot conflict.')
         if type(self.code) is not CompilationFailure or type(self.message) is not str or not self.message or type(self.severity) is not TypeValidationSeverity:
             raise TypeError('Compilation diagnostics require actual bounded code/message/severity.')
         if self.phase_id is not None:
@@ -258,8 +318,11 @@ class CompilationPhaseOutcome:
     status: CompilationPhaseStatus
     diagnostics: tuple[CompilationDiagnostic, ...] = ()
     reason: str | None = None
+    executed: bool | None = None
 
     def __post_init__(self) -> None:
+        if self.executed is not None and type(self.executed) is not bool or self.status is CompilationPhaseStatus.SKIPPED and self.executed is True:
+            raise ValueError('Execution evidence must be explicit and cannot contradict skipped outcome.')
         if type(self.descriptor) is not CompilationPhaseDescriptor:
             raise TypeError('Phase outcome retains its actual descriptor.')
         result = CompilationPhaseResult(self.status, self.diagnostics, reason=self.reason)
@@ -291,9 +354,10 @@ class CompilationResult:
             raise TypeError('Compiler result preserves original actual validation evidence.')
         if len({o.descriptor.id for o in self.phase_outcomes}) != len(self.phase_outcomes):
             raise ValueError('Compiler phase outcomes cannot duplicate an ID.')
-        diagnostic_membership = frozenset(self.diagnostics)
-        if any(d not in diagnostic_membership for o in self.phase_outcomes for d in o.diagnostics):
-            raise ValueError('Compiler result must preserve every phase diagnostic.')
+        diagnostic_membership = Counter(id(d) for d in self.diagnostics)
+        phase_membership = Counter(id(d) for o in self.phase_outcomes for d in o.diagnostics)
+        if any(count > diagnostic_membership[identity] for identity, count in phase_membership.items()):
+            raise ValueError('Compiler result must preserve every original phase diagnostic occurrence.')
         if self.status is CompilationStatus.SUCCEEDED:
             evidence = self.validation_evidence
             if type(self.preparation) is not PreparedCompilationInput or evidence is None or evidence.status is not ModelValidationStatus.VALID or evidence.readiness is not CompilationReadiness.READY or evidence.validated_model is not self.preparation.model:
@@ -310,16 +374,11 @@ class CompilationResult:
 
     @property
     def diagnostic_report(self) -> CompilationDiagnosticReport:
-        return CompilationDiagnosticReport(self.status.value, None if self.target is None else self.target.value, self.diagnostic_entries, tuple(CompilerPhaseDiagnosticView(o.descriptor.id, o.status.value, o.reason) for o in self.phase_outcomes), self.validation_evidence)
+        return CompilationDiagnosticReporter().report(self)
 
     @property
     def diagnostic_entries(self) -> tuple[ModelDiagnosticEntry, ...]:
-        validation = () if self.validation_evidence is None else tuple(associate_model_diagnostic(d, self.diagnostic_context) for d in self.validation_evidence.diagnostics)
-        compiler = []
-        for d in self.diagnostics:
-            target = None if d.reference is None else ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.reference)
-            compiler.append(ModelDiagnosticEntry(d, target=target, source_path=self.diagnostic_context.source_path(target), extension_origin=ModelDiagnosticOrigin.COMPILER))
-        return (*validation, *compiler)
+        return self.diagnostic_report.entries
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,17 +443,17 @@ class ModelCompiler:
         status = gate_status
         for phase, descriptor in zip(self.phases, self._descriptors):
             if blocker is not None:
-                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.SKIPPED, reason='Blocked by ' + blocker + '.'))
+                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.SKIPPED, reason='Blocked by ' + blocker + '.', executed=False))
                 continue
             missing = tuple(p for p in descriptor.prerequisites if p not in completed)
             if missing or request.context.target not in descriptor.targets:
                 d = CompilationDiagnostic(CompilationFailure.PHASE_UNAVAILABLE, 'Required phase prerequisite or explicitly declared target support is unavailable.', TypeValidationSeverity.WARNING, descriptor.id)
                 diagnostics.append(d)
-                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.INCOMPLETE, (d,), 'Phase prerequisites/target capability are unavailable.'))
+                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.INCOMPLETE, (d,), 'Phase prerequisites/target capability are unavailable.', executed=False))
                 blocker, status = descriptor.id, CompilationStatus.INCOMPLETE
                 continue
             result = phase.execute(request, state)
-            if type(result) is not CompilationPhaseResult or any(d.phase_id is not None and d.phase_id != descriptor.id for d in result.diagnostics):
+            if type(result) is not CompilationPhaseResult or any(d.phase_id is not None and d.phase_id != descriptor.id or d.association is not None and d.association.phase_id is not None and d.association.phase_id != descriptor.id for d in result.diagnostics):
                 raise TypeError('Phase implementation violated its result/diagnostic origin contract.')
             diagnostics.extend(result.diagnostics)
             if result.status is not CompilationPhaseStatus.COMPLETED:
@@ -403,7 +462,7 @@ class ModelCompiler:
                     d = CompilationDiagnostic(CompilationFailure.PHASE_FAILED, 'Configured compiler phase explicitly failed.', TypeValidationSeverity.ERROR, descriptor.id)
                     diagnostics.append(d)
                     phase_diagnostics = (*phase_diagnostics, d)
-                outcomes.append(CompilationPhaseOutcome(descriptor, result.status, phase_diagnostics, result.reason))
+                outcomes.append(CompilationPhaseOutcome(descriptor, result.status, phase_diagnostics, result.reason, executed=True))
                 if result.status is CompilationPhaseStatus.FAILED or any(d.severity is TypeValidationSeverity.ERROR for d in result.diagnostics):
                     status = CompilationStatus.FAILED
                 else:
@@ -419,14 +478,14 @@ class ModelCompiler:
                 raise TypeError('Artifact scope/target disagrees with compilation contract.')
             try:
                 artifacts = CompilationArtifactCollection((*state.artifacts.artifacts, *result.artifacts))
-            except CompilationArtifactConflict:
-                d = CompilationDiagnostic(CompilationFailure.ARTIFACT_CONFLICT, 'Duplicate artifact key conflicts with atomic deterministic output membership.', TypeValidationSeverity.ERROR, descriptor.id)
+            except CompilationArtifactConflict as conflict:
+                d = CompilationDiagnostic(CompilationFailure.ARTIFACT_CONFLICT, 'Duplicate artifact key conflicts with atomic deterministic output membership.', TypeValidationSeverity.ERROR, descriptor.id, association=CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.ARTIFACT_COLLECTION, descriptor.id, artifact_target=CompilationArtifactTarget(key=conflict.key, target=request.context.target), related_targets=tuple(ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, r) for a in (*state.artifacts.artifacts, *result.artifacts) if a.key == conflict.key for r in a.semantic_dependencies)))
                 diagnostics.append(d)
-                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.FAILED, (*result.diagnostics, d), 'Artifact key conflict.'))
+                outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.FAILED, (*result.diagnostics, d), 'Artifact key conflict.', executed=True))
                 blocker, status = descriptor.id, CompilationStatus.FAILED
                 continue
             state = CompilationState(preparation, artifacts)
-            outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.COMPLETED, result.diagnostics))
+            outcomes.append(CompilationPhaseOutcome(descriptor, CompilationPhaseStatus.COMPLETED, result.diagnostics, executed=True))
             completed.add(descriptor.id)
             capabilities.update(descriptor.capabilities)
         if status is None and (state.preparation is None or request.context.target == BUILD_TARGET and (CompilationCapability.EMIT_ARTIFACTS not in capabilities or not state.artifacts.artifacts)):
@@ -442,3 +501,109 @@ __all__ = ['MODULE_NAME', 'CompilationStatus', 'CompilationPhaseStatus', 'Compil
            'PreparedCompilationInput', 'CompilationArtifactConflict', 'CompilationArtifactCollection',
            'CompilationState', 'CompilationPhaseResult', 'CompilationPhase', 'CompilationPreparationPhase',
            'CompilationPhaseOutcome', 'CompilationResult', 'ModelCompiler']
+
+
+_LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({
+    CompilationFailure.INVALID_INPUT: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.VALIDATION_NOT_READY: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.VALIDATION_EVIDENCE_UNBOUND: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.MODEL_MISMATCH: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.CONTEXT_MISMATCH: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.UNSUPPORTED_TARGET: CompilationDiagnosticOrigin.PREREQUISITE,
+    CompilationFailure.PHASE_UNAVAILABLE: CompilationDiagnosticOrigin.ORCHESTRATOR,
+    CompilationFailure.PHASE_FAILED: CompilationDiagnosticOrigin.PHASE,
+    CompilationFailure.ARTIFACT_CONFLICT: CompilationDiagnosticOrigin.ARTIFACT_COLLECTION,
+    CompilationFailure.INCOMPLETE_BUILD: CompilationDiagnosticOrigin.RESULT,
+})
+
+
+@dataclass(frozen=True, slots=True)
+class CompilationDiagnosticContext:
+    """Optional occurrence-indexed caller evidence, not a registry/resolver."""
+    associations: tuple[tuple[int, CompilationDiagnosticAssociation], ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.associations) not in (tuple, list):
+            raise TypeError('Association overrides require an ordered finite sequence.')
+        values = []
+        for pair in self.associations:
+            if type(pair) not in (tuple, list) or len(pair) != 2 or type(pair[0]) is not int or pair[0] < 0 or type(pair[1]) is not CompilationDiagnosticAssociation:
+                raise TypeError('Associate each compiler diagnostic by its nonnegative occurrence index.')
+            values.append(tuple(pair))
+        if len({i for i, _ in values}) != len(values):
+            raise ValueError('Conflicting evidence for one diagnostic occurrence is not last-write-wins.')
+        object.__setattr__(self, 'associations', tuple(values))
+
+
+@dataclass(frozen=True, slots=True)
+class CompilationDiagnosticEntry:
+    """Compiler association wrapper; scalar semantics stay on original diagnostic."""
+    diagnostic: CompilationDiagnostic
+    association: CompilationDiagnosticAssociation
+
+    def __post_init__(self) -> None:
+        if type(self.diagnostic) is not CompilationDiagnostic or type(self.association) is not CompilationDiagnosticAssociation:
+            raise TypeError('Entry composes actual immutable diagnostic and bounded association.')
+        d, a = self.diagnostic, self.association
+        if d.association is not None and d.association != a or d.phase_id is not None and d.phase_id != a.phase_id or d.reference is not None and a.semantic_target is not None and d.reference != a.semantic_target.reference:
+            raise ValueError('Caller enrichment cannot replace existing producer evidence.')
+
+    def model_entry(self, context: ModelDiagnosticContext) -> ModelDiagnosticEntry:
+        if type(context) is not ModelDiagnosticContext:
+            raise TypeError('Reuse MOD-09 canonical source associations.')
+        a, d = self.association, self.diagnostic
+        target = a.semantic_target
+        if target is None and d.reference is not None:
+            target = ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, d.reference)
+        path = a.source_path if a.source_path is not None else context.source_path(target)
+        related_paths = a.related_paths if a.related_paths else tuple(path for t in a.related_targets if (path := context.source_path(t)) is not None)
+        details = CompilationDiagnosticDetails(a.origin, a.phase_id, None if a.artifact_target is None else a.artifact_target.diagnostic_view, a.semantic_context)
+        return ModelDiagnosticEntry(d, target, a.related_targets, path, related_paths, extension_origin=ModelDiagnosticOrigin.COMPILER, compilation_details=details)
+
+
+@dataclass(frozen=True, slots=True)
+class CompilationDiagnosticReporter:
+    def report(self, result: CompilationResult, context: CompilationDiagnosticContext | None = None) -> CompilationDiagnosticReport:
+        if type(result) is not CompilationResult or context is not None and type(context) is not CompilationDiagnosticContext:
+            raise TypeError('Reporting accepts the original compiler result and optional typed associations.')
+        overrides = {} if context is None else dict(context.associations)
+        if any(i >= len(result.diagnostics) for i in overrides):
+            raise ValueError('Association occurrence is outside the original result.')
+        # Phase ownership uses occurrence identity and producer outcome order, not text/equality deduplication.
+        owners = {}
+        occurrences: dict[int, deque[int]] = {}
+        for index, diagnostic in enumerate(result.diagnostics):
+            occurrences.setdefault(id(diagnostic), deque()).append(index)
+        for outcome in result.phase_outcomes:
+            for diagnostic in outcome.diagnostics:
+                slots = occurrences.get(id(diagnostic))
+                if not slots:
+                    raise ValueError('Phase diagnostics require original occurrence identity in the compiler result.')
+                owners[slots.popleft()] = outcome
+        phases = {o.descriptor.id: o for o in result.phase_outcomes}
+        validation = () if result.validation_evidence is None else tuple(associate_model_diagnostic(d, result.diagnostic_context) for d in result.validation_evidence.diagnostics)
+        compiler = []
+        for i, diagnostic in enumerate(result.diagnostics):
+            owner = owners.get(i)
+            association = overrides.get(i, diagnostic.association)
+            if association is None:
+                phase_id = diagnostic.phase_id if diagnostic.phase_id is not None else None if owner is None else owner.descriptor.id
+                origin = _LEGACY_DIAGNOSTIC_OWNERS[diagnostic.code]
+                if origin is CompilationDiagnosticOrigin.PREREQUISITE and owner is not None:
+                    origin = CompilationDiagnosticOrigin.PHASE
+                association = CompilationDiagnosticAssociation(origin, phase_id, semantic_context=result.diagnostic_context.semantic_context)
+            if association.phase_id is not None:
+                outcome = phases.get(association.phase_id)
+                if outcome is None or owner is not None and outcome is not owner:
+                    raise ValueError('Phase association must refer to the actual producer outcome.')
+                if association.origin in (CompilationDiagnosticOrigin.PHASE, CompilationDiagnosticOrigin.ARTIFACT_CONSTRUCTION) and (outcome.status is CompilationPhaseStatus.SKIPPED or outcome.executed is False):
+                    raise ValueError('Nonexecuted phase cannot own an execution diagnostic.')
+            compiler.append(CompilationDiagnosticEntry(diagnostic, association).model_entry(result.diagnostic_context))
+        # CMP-01 emission order is authoritative; preserve every occurrence, validation remains first.
+        phase_views = tuple(CompilerPhaseDiagnosticView(o.descriptor.id, o.status.value, o.reason, o.descriptor.prerequisites, o.executed) for o in result.phase_outcomes)
+        return CompilationDiagnosticReport(result.status.value, None if result.target is None else result.target.value, (*validation, *compiler), phase_views, result.validation_evidence, len(result.artifacts.artifacts))
+
+
+__all__ += ['CompilationDiagnosticOrigin', 'CompilationArtifactTarget',
+            'CompilationDiagnosticAssociation', 'CompilationDiagnosticContext',
+            'CompilationDiagnosticEntry', 'CompilationDiagnosticReporter']

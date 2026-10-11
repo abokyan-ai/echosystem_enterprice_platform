@@ -9,6 +9,7 @@ without executing those transformations. No registry mutation, compiler,
 runtime or parser dependency.
 """
 from dataclasses import dataclass as _dataclass, field as _dataclass_field, is_dataclass as _is_dataclass
+import re as _re
 from enum import Enum as _Enum
 from types import MappingProxyType as _MappingProxyType
 from typing import Mapping as _Mapping, Protocol as _Protocol
@@ -2166,6 +2167,53 @@ class ModelDiagnosticContext:
         return paths[0] if paths is not None and len(paths) == 1 else None
 
 
+class CompilationDiagnosticOrigin(_Enum):
+    PREREQUISITE = 'compilation-prerequisite'
+    ORCHESTRATOR = 'compiler-orchestrator'
+    PHASE = 'compiler-phase'
+    ARTIFACT_CONSTRUCTION = 'artifact-construction'
+    ARTIFACT_COLLECTION = 'artifact-collection'
+    RESULT = 'compilation-result'
+
+
+@_dataclass(frozen=True, slots=True)
+class CompilationArtifactDiagnosticView:
+    """Transport projection of existing artifact tokens, not an artifact identity type."""
+    key: str | None = None
+    kind: str | None = None
+    target: str | None = None
+
+    def __post_init__(self) -> None:
+        for value, pattern, limit in ((self.key, r'[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', 160), (self.kind, r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', 80), (self.target, r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', 80)):
+            if value is not None and (type(value) is not str or len(value) > limit or _re.fullmatch(pattern, value) is None):
+                raise ValueError('Artifact diagnostic projection requires original bounded logical tokens.')
+        if self.key is None and self.kind is None and self.target is None:
+            raise ValueError('Artifact association needs a key, kind or explicit intended target.')
+
+
+@_dataclass(frozen=True, slots=True)
+class CompilationDiagnosticDetails:
+    """MOD-09 presentation seam; compiler owns association and result semantics."""
+    origin: CompilationDiagnosticOrigin
+    phase_id: str | None = None
+    artifact: CompilationArtifactDiagnosticView | None = None
+    semantic_context: SemanticContextRef | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.origin) is not CompilationDiagnosticOrigin:
+            raise TypeError('Compiler responsibility must be explicit.')
+        if self.phase_id is not None and (type(self.phase_id) is not str or _re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', self.phase_id) is None):
+            raise ValueError('Use the existing compiler phase identifier.')
+        if self.origin in (CompilationDiagnosticOrigin.PHASE, CompilationDiagnosticOrigin.ARTIFACT_CONSTRUCTION) and self.phase_id is None:
+            raise ValueError('Executed phase responsibility requires a phase association.')
+        if self.origin is CompilationDiagnosticOrigin.PREREQUISITE and self.phase_id is not None:
+            raise ValueError('Prerequisite gate is not an executed phase.')
+        if self.artifact is not None and type(self.artifact) is not CompilationArtifactDiagnosticView:
+            raise TypeError('Artifact presentation is a typed projection.')
+        if self.semantic_context is not None and (type(self.semantic_context) is not SemanticContextRef or type(self.semantic_context.context_id) is not SemanticElementId):
+            raise TypeError('Scope association requires an existing semantic context.')
+
+
 @_dataclass(frozen=True, slots=True)
 class ModelDiagnosticEntry:
     diagnostic: ModelDiagnosticPayload
@@ -2175,6 +2223,7 @@ class ModelDiagnosticEntry:
     related_paths: tuple[AuthoringSchemaPath, ...] = ()
     validation_report: ModelValidationReport | None = None
     extension_origin: ModelDiagnosticOrigin | None = None
+    compilation_details: CompilationDiagnosticDetails | None = None
 
     def __post_init__(self) -> None:
         if type(self.diagnostic) not in _DIAGNOSTIC_ORIGINS:
@@ -2189,6 +2238,8 @@ class ModelDiagnosticEntry:
                 raise TypeError('Compiler presentation must retain explicit optional phase/cause identifiers.')
         elif self.extension_origin is not None:
             raise ValueError('Existing diagnostic origins cannot be relabeled by an extension.')
+        if self.compilation_details is not None and (type(self.compilation_details) is not CompilationDiagnosticDetails or self.extension_origin is not ModelDiagnosticOrigin.COMPILER):
+            raise TypeError('Compiler details cannot relabel validation diagnostics.')
         if self.target is not None and type(self.target) is not ModelDiagnosticTarget:
             raise TypeError('Semantic target association must be typed or absent.')
         object.__setattr__(self, 'related_targets', _ordered(self.related_targets, ModelDiagnosticTarget))
@@ -2288,8 +2339,15 @@ class CompilerPhaseDiagnosticView:
     phase_id: str
     status: str
     reason: str | None = None
+    prerequisites: tuple[str, ...] = ()
+    executed: bool | None = None
 
     def __post_init__(self) -> None:
+        if type(self.prerequisites) not in (tuple, list) or any(type(p) is not str or _re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', p) is None for p in self.prerequisites):
+            raise TypeError('Prerequisite projection retains explicit ordered phase identifiers.')
+        object.__setattr__(self, 'prerequisites', tuple(self.prerequisites))
+        if self.executed is not None and type(self.executed) is not bool or self.status == 'skipped' and self.executed is True:
+            raise ValueError('Execution evidence cannot claim a skipped phase ran.')
         if type(self.phase_id) is not str or not self.phase_id.startswith('CMP-PHASE-') or not self.phase_id[10:]:
             raise TypeError('Compiler phase presentation requires the producer phase identifier.')
         if self.status not in ('completed', 'failed', 'incomplete', 'skipped') or type(self.status) is not str:
@@ -2306,8 +2364,13 @@ class CompilationDiagnosticReport:
     entries: tuple[ModelDiagnosticEntry, ...]
     phase_outcomes: tuple[CompilerPhaseDiagnosticView, ...]
     validation_evidence: ModelValidationResult | None = None
+    artifact_count: int | None = None
 
     def __post_init__(self) -> None:
+        if self.artifact_count is not None and (type(self.artifact_count) is not int or self.artifact_count < 0):
+            raise ValueError('Artifact count is original output membership, never a publication claim.')
+        if self.status != 'succeeded' and self.artifact_count not in (None, 0):
+            raise ValueError('Unsuccessful compilation projection cannot claim successful output artifacts.')
         if type(self.status) is not str or self.status not in ('succeeded', 'failed', 'incomplete'):
             raise TypeError('Compiler presentation preserves the original status scalar.')
         if self.target is not None and (type(self.target) is not str or not self.target):
@@ -2318,4 +2381,68 @@ class CompilationDiagnosticReport:
             raise TypeError('Compiler presentation retains original MOD-08 evidence.')
 
 
+    @property
+    def compiler_entries(self) -> tuple[ModelDiagnosticEntry, ...]:
+        return tuple(e for e in self.entries if e.origin is ModelDiagnosticOrigin.COMPILER)
+
+    @property
+    def summary(self) -> 'CompilationDiagnosticSummary':
+        entries = self.compiler_entries
+        return CompilationDiagnosticSummary(len(entries), *(sum(e.diagnostic.severity is s for e in entries) for s in (TypeValidationSeverity.ERROR, TypeValidationSeverity.WARNING, TypeValidationSeverity.INFO)))
+
+    def by_severity(self, severity: TypeValidationSeverity) -> tuple[ModelDiagnosticEntry, ...]:
+        if type(severity) is not TypeValidationSeverity:
+            raise TypeError('Reuse the current diagnostic severity.')
+        return tuple(e for e in self.compiler_entries if e.diagnostic.severity is severity)
+
+    def by_origin(self, origin: CompilationDiagnosticOrigin | None) -> tuple[ModelDiagnosticEntry, ...]:
+        if origin is not None and type(origin) is not CompilationDiagnosticOrigin:
+            raise TypeError('Use the explicit compiler responsibility.')
+        return tuple(e for e in self.compiler_entries if (None if e.compilation_details is None else e.compilation_details.origin) is origin)
+
+    def by_phase(self, phase_id: str | None) -> tuple[ModelDiagnosticEntry, ...]:
+        if phase_id is not None and (type(phase_id) is not str or _re.fullmatch(r'CMP-PHASE-[A-Z0-9]+(?:-[A-Z0-9]+)*', phase_id) is None):
+            raise ValueError('Use existing phase IDs or explicit absence.')
+        return tuple(e for e in self.compiler_entries if (e.diagnostic.phase_id if e.compilation_details is None else e.compilation_details.phase_id) == phase_id)
+
+    def by_semantic_target(self, target: ModelDiagnosticTarget) -> tuple[ModelDiagnosticEntry, ...]:
+        if type(target) is not ModelDiagnosticTarget:
+            raise TypeError('Semantic filtering requires a stable typed target.')
+        return tuple(e for e in self.compiler_entries if target in (e.target, *e.related_targets))
+
+    def by_artifact_target(self, artifact: CompilationArtifactDiagnosticView) -> tuple[ModelDiagnosticEntry, ...]:
+        if type(artifact) is not CompilationArtifactDiagnosticView:
+            raise TypeError('Use the explicit artifact projection.')
+        return tuple(e for e in self.compiler_entries if e.compilation_details is not None and e.compilation_details.artifact == artifact)
+
+    def group_by_origin(self) -> _Mapping[CompilationDiagnosticOrigin | None, tuple[ModelDiagnosticEntry, ...]]:
+        return _MappingProxyType({origin: entries for origin in (None, *CompilationDiagnosticOrigin) if (entries := self.by_origin(origin))})
+
+    def group_by_phase(self) -> _Mapping[str | None, tuple[ModelDiagnosticEntry, ...]]:
+        declared = tuple(p.phase_id for p in self.phase_outcomes)
+        entry_phases = tuple(e.diagnostic.phase_id if e.compilation_details is None else e.compilation_details.phase_id for e in self.compiler_entries)
+        extra = sorted({p for p in entry_phases if p is not None} - set(declared))
+        phases = (None, *declared, *extra)
+        return _MappingProxyType({phase: entries for phase in phases if (entries := self.by_phase(phase))})
+
+    def group_by_severity(self) -> _Mapping[TypeValidationSeverity, tuple[ModelDiagnosticEntry, ...]]:
+        return _MappingProxyType({severity: entries for severity in TypeValidationSeverity if (entries := self.by_severity(severity))})
+
+
 __all__ += ['CompilerPhaseDiagnosticView', 'CompilationDiagnosticReport']
+
+
+@_dataclass(frozen=True, slots=True)
+class CompilationDiagnosticSummary:
+    total: int
+    errors: int
+    warnings: int
+    info: int
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or v < 0 for v in (self.total, self.errors, self.warnings, self.info)) or self.total != self.errors + self.warnings + self.info:
+            raise ValueError('Summary counts must be nonnegative integers covering the existing severities.')
+
+
+__all__ += ['CompilationDiagnosticOrigin', 'CompilationArtifactDiagnosticView',
+            'CompilationDiagnosticDetails', 'CompilationDiagnosticSummary']

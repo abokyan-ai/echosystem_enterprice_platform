@@ -1,0 +1,57 @@
+# CMP-02 — Compilation diagnostics
+
+Documentation date: 2026-10-11. Behavioral status: **DEFERRED / NOT VERIFIED**.
+
+## Existing contracts and actual gaps
+
+The repository has CMP-01 compiler/result/phase contracts, MOD-08 original validation evidence, MOD-09 diagnostic envelopes/projection, MOD-03 tooling source indexes and compiled-contracts artifact key/kind metadata. The semantic Kernel exports no general SK-11 Diagnostic, severity or factory. This task reuses actual CompilationDiagnostic and current TypeValidationSeverity; it does not claim missing SK-11 compatibility was achieved or invent a replacement universal diagnostic type. Full TYPE-01/standalone facet identity and concrete compiler generators remain unavailable.
+
+Django/DRF are not installed project dependencies and no compiler HTTP boundary exists. Core construction/reporting stays pure Python. Existing explicit JSON-ready model-loader presentation is extended; no endpoint, serializer, HTTP status policy, ORM, migration or dependency upgrade is introduced. Future applicable HTTP integration must use the real authenticated/authorized DRF application envelope.
+
+## Ownership and immutable association
+
+`compiler_core.public` adds CompilationArtifactTarget (actual existing key/kind/CompilationTargetId), CompilationDiagnosticAssociation, CompilationDiagnosticEntry, CompilationDiagnosticContext and CompilationDiagnosticReporter. CompilationDiagnostic gains optional producer association without copying code, severity or message. Missing key can be represented by an explicit artifact kind/intended target, with no successful artifact instance. Targets reuse ModelDiagnosticTarget with exact ElementVersionRef and optional owned FieldId; semantic scope is separate SemanticContextRef. No field receives SemanticElementId. A facet-specific source path belongs under its existing owning definition; no standalone facet ID is fabricated.
+
+`model_authoring.public` extends its existing CompilationDiagnosticReport and ModelDiagnosticEntry presentation seam with CompilationDiagnosticDetails, CompilationDiagnosticOrigin, CompilationArtifactDiagnosticView, CompilationDiagnosticSummary and recorded phase prerequisite/execution fields. Artifact scalar views are transport projections of existing tokens, not a second identity service or artifact object. Authoring/tooling never import compiler implementation or compiled-contracts. No manifest/profile/activation/runtime dependency change is needed.
+
+Origins are explicit prerequisite, orchestrator, phase, artifact-construction, artifact-collection and result responsibilities. A new association requires an actual enum origin. Executed phase/construction responsibility requires a phase ID; prerequisite responsibility cannot have one. For legacy CMP-01 diagnostics without association, a fixed code ownership table maps CMP-001..006 to prerequisite, CMP-007 orchestrator, CMP-008 phase, CMP-009 collection and CMP-010 result. A legacy gate-category code actually present in phase outcome is associated with that recorded phase responsibility. No message search, severity-based ownership or origin authority inference. Historical MOD-09 projections with no details remain unassociated (`None`) rather than guessed.
+
+## Producer integration and occurrence preservation
+
+`CompilationResult.diagnostic_report` delegates to the reporter; `.diagnostic_entries` returns its existing MOD-09 envelopes. Original validation evidence and original validation report payloads remain intact and retain their existing origins. Compiler summaries/filters cover only compiler entries; the unified MOD-09 summary still covers every model/loading/compiler entry. Compilation status is the original CMP-01 scalar, independent of all counts/filters.
+
+A result must contain every original phase diagnostic object occurrence, including repeated occurrences. This strengthens CMP-01's previous equality/set-membership guard: a distinct equal object cannot replace original evidence and one occurrence cannot cover two phase occurrences. Original references are already preserved by the coordinator; manually assembled/deserialized results must also preserve them. This is in-process association, not a portable hash/certificate.
+
+Reporting accepts optional occurrence-indexed associations: `CompilationDiagnosticContext(associations=((index, association), ...))`. Index is the zero-based position in `result.diagnostics`, not a phase position. Duplicate, boolean, negative and out-of-range indices are rejected. Existing producer association/phase/reference cannot be overwritten. Original phase object occurrences are matched to earliest unused result occurrences in authoritative phase outcome order, without equality/text deduplication. Malformed producer evidence is rejected rather than silently repaired.
+
+The coordinator records execution evidence only at its already-existing scheduling/execution points: skipped/gate-blocked or unavailable prerequisite phase `False`; actual phase execute path `True`. Legacy manually supplied outcome `None` remains unknown. No new phase execution or scheduling functionality is implemented. Reporting rejects phase association to unknown/different producer outcome and executed responsibility on skipped or explicitly nonexecuted outcome. Original outcomes/status/reason/prerequisites remain authoritative, including INCOMPLETE.
+
+Artifact conflict detection remains the existing CMP-01 collection algorithm. On its existing conflict exception the producer now retains actual conflicting CompilationArtifactKey/intended target and every matching candidate's exact semantic dependency in deterministic candidate/dependency order. It does not select an arbitrary primary, fabricate artifact kind or emit candidate outputs on failure. Report artifact count is the original final successful collection size (zero for unsuccessful compiler result); legacy projection can leave it unavailable as None. Counts imply no publication or deployment authority.
+
+## Source enrichment and ordering
+
+Compiler envelopes reuse ModelDiagnosticContext and canonical source associations. Explicit source path wins; otherwise reliable exact definition/field mapping is used. Related explicit paths win; otherwise each reliable related target mapping contributes a path in original related-target order. All semantic related targets remain even if their physical mapping is absent. MOD-09's existing source entry/index machinery supplies actual MOD-03 spans in `model_loader.public`; missing or ambiguous mappings stay unavailable. No source text search, guessed line numbers, filename-based identity or regenerated span. Already located entries preserve their existing evidence. Target configuration needs an explicit actual authoring path; there is no automatic configuration-source discovery.
+
+Existing MOD-09 indexes are selected by explicit source ID. A single default source selection cannot infer a definition-to-file relationship across many files; caller must supply appropriate source selection/explicit located evidence. Related path slots describe reliable paths and are not an exhaustive parallel map of semantic related targets. Exact constraint-expression mapping is only available through explicit supplied paths.
+
+Order is validation entries first in original MOD-08 sequence, followed by every compiler diagnostic in **CMP-01 authoritative emission order**. Within phases this preserves local emission order; compiler gate/orchestration/collection/final messages remain at their original positions. No severity/message sorting, timestamp/random ordering or lossy deduplication. Group order is explicit origin/severity enum order and original phase outcome order, with None group and sorted residual legacy phase IDs. Tuples and MappingProxyType protect snapshots; caller lists are copied.
+
+## Queries and transport
+
+Existing CompilationDiagnosticReport provides `compiler_entries`, derived `summary`, `by_severity`, `by_origin`, `by_phase`, `by_semantic_target`, `by_artifact_target`, and read-only origin/phase/severity groups. Semantic filtering includes primary and related exact targets; artifact filtering is exact projected association equality, not a query language. Missing historical responsibility can be grouped under None. Located ModelDiagnosticReport adds compiler-origin/phase/artifact filters while retaining the existing summary and filters.
+
+`model_diagnostic_report_payload` explicitly includes compiler responsibility, associated phase, phase prerequisites/execution, actual artifact count and separate compiler summary. Existing message/source/semantic flags remain false by default. New `include_artifact_targets=False` suppresses artifact identity details by default and requires an actual bool. Opt-in artifact output includes only key/kind/intended-target tokens, not payload/path. Semantic scope is disclosed only with semantic details. No physical filename/source content/arbitrary repr/stack trace fields are emitted. Author-controlled message/source-ID strings may contain sensitive text; authorized opt-in/redaction remains the actual application caller's responsibility. The formatter is not a secret scanner and does not grant authorization. HTTP request status is not compilation status.
+
+## Mini Sales example — specification only, not executed
+
+Given the established `sales.Customer@1.0.0` model with name String required/nonnullable/max-length 200, active Boolean required/nonnullable, creditLimit Decimal optional/nonnullable/minimum 0/precision 18/scale 2 and matching original validation evidence:
+
+1. Obtain an actual CMP-01 result through the existing compiler in future authorized execution. Validation-not-ready result preserves CMP-002 plus original MOD-08 evidence, INCOMPLETE/FAILED as actually produced, skipped phases and zero successful artifacts.
+2. Build `CompilationDiagnosticReporter().report(result)` without executing validators/phases. Default artifact-build retains CMP-010/INCOMPLETE because generators are absent. Actual unavailable configured prerequisites retain CMP-007/orchestrator and executed=False.
+3. If reliable field-expression or configuration-source association is supplied, use occurrence-indexed context with existing exact Customer target/owned FieldId and AuthoringSchemaPath. No invented source location.
+4. Feed the existing projection to `ModelDiagnosticReporter().report((projection,), source_context)` for actual MOD-03 enrichment. Use `model_diagnostic_report_payload(located_report)` for safe defaults or explicit caller-authorized opt-in details.
+5. A future actual conflicting candidate result retains CMP-009, actual conflict key, all exact related semantic dependencies and reliable related source locations; actual failed phase retains original diagnostics/outcomes, including CMP-008 when already produced. Neither scenario has been executed and no future artifact fixture was fabricated.
+
+## Deferred verification and readiness
+
+The complete specification is [137 deferred scenarios](../../test-archive/CMP-02/CMP-02-deferred-tests.md). No automated tests/scenario scripts were created or run. Source/build/import/dependency checks are separate and cannot establish semantic correctness. General SK-11 factory, richer facet contracts, future generator fixtures and applicable DRF integration remain explicit upstream prerequisites. Bounded CMP-02 implementation is ready for review/next-stage planning under those limitations; stop without implementing CMP-03.
