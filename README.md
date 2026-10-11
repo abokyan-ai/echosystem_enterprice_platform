@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations, bounded runtime-loading orchestration and a scoped exact-version runtime registry are implemented; approved runtime producers/decoders, authenticated loading integration, activation, persistence and UI remain future capabilities.
+A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations, bounded runtime-loading orchestration, a scoped exact-version registry and conditional immutable instance orchestration are implemented. Actual TYPE-08 canonical instances, approved loaded instance schemas/decoders and authenticated runtime integrations remain unavailable; activation, persistence and UI remain future capabilities.
 
 ## Quick start
 
@@ -25,7 +25,7 @@ Build checks syntax, architectural boundaries and importable public entry points
 
 See [architecture](docs/architecture/README.md), [repository structure](docs/architecture/repository-structure.md), [dependency rules](docs/architecture/dependency-rules.md), [module guidelines](docs/architecture/module-guidelines.md) and [contributing](CONTRIBUTING.md).
 
-The repository contains eleven physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary, one input loader, one CLI, one artifact filesystem boundary and one runtime-loading composition boundary. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
+The repository contains twelve physical source modules: five platform foundations, one authoring representation boundary, one independent hosting contract boundary, one input loader, one CLI, one artifact filesystem boundary, one runtime-loading composition boundary and one pure Python semantic-instance application composition boundary. Other families have documented future ownership, not empty packages. Python is an implementation choice; semantic boundaries do not expose Python framework or infrastructure types. Cross-language/wire contracts require explicit design when a real target needs them.
 
 There is no runnable web/mobile UI in ARC-01. Reference Mini Sales is reserved for the first executable vertical slice.
 
@@ -240,3 +240,7 @@ Pure bounded runtime coordinator with explicit trusted authorization, complete d
 ## RUN-02 — Runtime Model Registry
 
 Pure application-owned in-memory registry with original RUN-01 evidence, explicit definition extraction/registration/inspection authority, exact scoped semantic versions, atomic locked copy-on-write updates, immutable snapshots, bounded name/version inspection and conflict diagnostics. No default registry, implicit latest, decoder, authority, activation, ORM or endpoint. [Contract and conditional Mini Sales](docs/runtime/runtime-model-registry.md), [ADR-0043](docs/architecture/decisions/ADR-0043-runtime-model-registry.md), [completion record](docs/architecture/run02-verification.md). [198 deferred cases](test-archive/RUN-02/RUN-02-deferred-tests.md), executable tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-02.
+
+## RUN-03 — Semantic Instance Runtime
+
+Pure Python application-owned create/update/inspect orchestration consumes original exact RUN-02 entries, existing FieldId/presence/nullability/constraint semantics and explicitly approved authoritative TYPE-08 ports. New immutable states preserve ID/version/context, with local expected revisions and independently bound permissions. Actual TYPE-08/schema/decoder/authority integrations are **unavailable**: defaults fail closed, no canonical instance/sentinel/decoder or successful demo is fabricated. No persistence/ORM/endpoint/activation/action/event/workflow. [Contract and conditional Mini Sales](docs/runtime/semantic-instance-runtime.md), [ADR-0044](docs/architecture/decisions/ADR-0044-semantic-instance-runtime.md), [source/completion record](docs/architecture/run03-verification.md), [200 deferred cases](test-archive/RUN-03/RUN-03-deferred-tests.md). Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-03; RUN-04 not started.

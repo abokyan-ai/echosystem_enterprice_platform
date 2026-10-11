@@ -240,6 +240,31 @@
       "external_dependencies": [],
       "technology_profile": "runtime-artifact-loading",
       "activation_dependencies": []
+    },
+    {
+      "name": "semantic-instance-runtime",
+      "path": "apps/semantic-instance-runtime",
+      "package": "semantic_instance_runtime",
+      "zone": "application",
+      "owner": "semantic instance application maintainers",
+      "language": "python",
+      "public_api": [
+        "semantic_instance_runtime.public"
+      ],
+      "allowed_dependencies": [
+        "semantic-kernel",
+        "model-core",
+        "compiled-contracts",
+        "runtime-core"
+      ],
+      "dependency_categories": {
+        "semantic-kernel": "api",
+        "model-core": "api",
+        "compiled-contracts": "api",
+        "runtime-core": "api"
+      },
+      "external_dependencies": [],
+      "activation_dependencies": []
     }
   ]
 }
