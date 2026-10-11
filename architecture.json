@@ -198,6 +198,26 @@
         "bootstrap-contracts": "api",
         "model-authoring": "development"
       }
+    },
+    {
+      "name": "artifact-writer",
+      "path": "tools/artifact-writer",
+      "package": "artifact_writer",
+      "zone": "tooling",
+      "owner": "compiler materialization maintainers",
+      "language": "python",
+      "public_api": [
+        "artifact_writer.public"
+      ],
+      "allowed_dependencies": [
+        "compiler-core"
+      ],
+      "dependency_categories": {
+        "compiler-core": "api"
+      },
+      "external_dependencies": [],
+      "technology_profile": "artifact-materialization",
+      "activation_dependencies": []
     }
   ]
 }

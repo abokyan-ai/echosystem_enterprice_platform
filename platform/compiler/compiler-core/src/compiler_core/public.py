@@ -99,6 +99,24 @@ class CompilationFailure(Enum):
     MANIFEST_DUPLICATE_ARTIFACT = 'CMP-041'
     MANIFEST_INCOMPLETE_OUTPUT = 'CMP-042'
     MANIFEST_IDENTITY_COLLISION = 'CMP-043'
+    WRITE_INVALID_INPUT = 'CMP-044'
+    WRITE_COMPILATION_NOT_READY = 'CMP-045'
+    WRITE_MANIFEST_MISMATCH = 'CMP-046'
+    WRITE_CONTENT_MEMBERSHIP = 'CMP-047'
+    WRITE_UNSUPPORTED_CONTENT = 'CMP-048'
+    WRITE_INVALID_DESTINATION = 'CMP-049'
+    WRITE_UNSAFE_PATH = 'CMP-050'
+    WRITE_LOCATION_CONFLICT = 'CMP-051'
+    WRITE_UNSUPPORTED_POLICY = 'CMP-052'
+    WRITE_DESTINATION_EXISTS = 'CMP-053'
+    WRITE_STAGING_FAILED = 'CMP-054'
+    WRITE_IO_FAILED = 'CMP-055'
+    WRITE_INTEGRITY_MISMATCH = 'CMP-056'
+    WRITE_COMMIT_FAILED = 'CMP-057'
+    WRITE_CLEANUP_FAILED = 'CMP-058'
+    WRITE_UNSUPPORTED_ATOMICITY = 'CMP-059'
+    WRITE_UNSUPPORTED_DURABILITY = 'CMP-060'
+    WRITE_UNSUPPORTED_ENCODING = 'CMP-061'
 
 
 def _phase_id(value: str) -> None:
@@ -138,8 +156,14 @@ class CompilationDiagnosticAssociation:
     ir_identity: 'SemanticIRId | None' = None
     related_artifact_targets: tuple[CompilationArtifactTarget, ...] = ()
     manifest_identity: 'RuntimeArtifactManifestId | None' = None
+    write_stage: 'ArtifactWriteStage | None' = None
+    output_location: 'ArtifactRelativeLocation | None' = None
 
     def __post_init__(self) -> None:
+        if self.write_stage is not None and type(self.write_stage) is not ArtifactWriteStage:
+            raise TypeError('Write diagnostics require an explicit bounded stage.')
+        if self.output_location is not None and type(self.output_location) is not ArtifactRelativeLocation:
+            raise TypeError('Write diagnostics expose only validated relative locations.')
         if self.artifact_target is not None and type(self.artifact_target) is not CompilationArtifactTarget:
             raise TypeError('Artifact target must be a bounded association.')
         if self.ir_identity is not None and type(self.ir_identity) is not SemanticIRId:
@@ -1273,6 +1297,7 @@ def _diagnostic_semantics(diagnostic: CompilationDiagnostic) -> tuple[object, ..
         association.artifact_target, association.related_targets,
         association.semantic_context, association.ir_identity,
         association.related_artifact_targets, association.manifest_identity,
+        association.write_stage, association.output_location,
     )
     # Message and source paths are presentation, never diagnostic ordering keys.
     return (diagnostic.code, diagnostic.severity, diagnostic.phase_id,
@@ -1603,3 +1628,338 @@ __all__ += ['CompilationOutputOrigin', 'RuntimeArtifactDependencyRef', 'RuntimeA
             'RuntimeArtifactManifestSchemaVersion', 'RuntimeArtifactKindSupport',
             'RuntimeArtifactManifestCompilationAssociation', 'RuntimeArtifactManifest',
             'RuntimeArtifactManifestAssemblyResult', 'RuntimeArtifactManifestAssembler']
+
+
+class ArtifactWriteStage(Enum):
+    PREFLIGHT = 'preflight'
+    DESTINATION = 'destination'
+    STAGING = 'staging'
+    WRITE = 'write'
+    VERIFY = 'verify'
+    COMMIT = 'commit'
+    SYNC = 'sync'
+    CLEANUP = 'cleanup'
+
+
+class ArtifactWritePolicy(Enum):
+    FAIL_IF_EXISTS = 'fail-if-exists'
+
+
+class ArtifactDurabilityPolicy(Enum):
+    VISIBLE_COMMIT = 'visible-commit'
+    SYNCHRONIZED_COMMIT = 'synchronized-commit'
+
+
+class ArtifactWriteError(ValueError):
+    def __init__(self, diagnostics: tuple[CompilationDiagnostic, ...], status: CompilationStatus = CompilationStatus.FAILED) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not CompilationDiagnostic for d in diagnostics) or status not in (CompilationStatus.FAILED, CompilationStatus.INCOMPLETE):
+            raise TypeError('Write rejection retains actual nonempty compiler diagnostics.')
+        self.diagnostics = diagnostics
+        self.status = status
+        super().__init__('Artifact materialization rejected; inspect structured diagnostics.')
+
+
+def _write_diagnostic(code: CompilationFailure, message: str, *, stage: ArtifactWriteStage = ArtifactWriteStage.PREFLIGHT, manifest: RuntimeArtifactManifest | None = None, descriptor: RuntimeArtifactDescriptor | None = None, location: 'ArtifactRelativeLocation | None' = None, incomplete: bool = False) -> CompilationDiagnostic:
+    association = CompilationDiagnosticAssociation(
+        CompilationDiagnosticOrigin.RESULT,
+        artifact_target=None if descriptor is None else CompilationArtifactTarget(descriptor.key, descriptor.kind),
+        semantic_context=None if manifest is None else manifest.semantic_context,
+        manifest_identity=None if manifest is None else manifest.identity,
+        write_stage=stage, output_location=location)
+    return CompilationDiagnostic(code, message, TypeValidationSeverity.WARNING if incomplete else TypeValidationSeverity.ERROR, association=association)
+
+
+def _write_reject(code: CompilationFailure, message: str, **associations: object) -> None:
+    diagnostic = _write_diagnostic(code, message, **associations)
+    raise ArtifactWriteError((diagnostic,), CompilationStatus.INCOMPLETE if associations.get('incomplete') else CompilationStatus.FAILED)
+
+
+def _write_sequence(values: object, expected: type) -> tuple:
+    if type(values) not in (tuple, list) or any(type(v) is not expected for v in values):
+        _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'An explicit finite typed inventory is required.')
+    return tuple(values)
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class ArtifactRelativeLocation:
+    """v0 deliberately supports portable, flat ASCII filenames only."""
+    value: str
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not str or not 1 <= len(self.value) <= 240 or re.fullmatch(r'[a-z][a-z0-9_.-]*', self.value) is None or self.value.endswith('.') or self.value.split('.')[0] in {'con', 'prn', 'aux', 'nul', *(f'com{i}' for i in range(10)), *(f'lpt{i}' for i in range(10))}:
+            _write_reject(CompilationFailure.WRITE_UNSAFE_PATH, 'Output requires a bounded unambiguous portable flat relative filename.')
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWriteDestination:
+    """Logical reference resolved exclusively through trusted adapter configuration."""
+    root_reference: str
+    output_directory: str
+
+    def __post_init__(self) -> None:
+        for value in (self.root_reference, self.output_directory):
+            if type(value) is not str or len(value) > 100 or re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', value) is None:
+                _write_reject(CompilationFailure.WRITE_INVALID_DESTINATION, 'Destination requires explicit bounded server root and output-set tokens.')
+        ArtifactRelativeLocation(self.output_directory)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactContentDigest:
+    """Producer-declared exact byte digest; no signature/authenticity claim."""
+    algorithm: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.algorithm != 'sha256' or type(self.algorithm) is not str or type(self.value) is not str or re.fullmatch(r'[0-9a-f]{64}', self.value) is None:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Only explicitly declared lowercase SHA-256 byte digests are supported.', incomplete=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactByteContentSupport:
+    """Owner approval of an existing immutable artifact field, never an encoder."""
+    artifact_support: RuntimeArtifactKindSupport
+    byte_field: str
+    digest_field: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.artifact_support) is not RuntimeArtifactKindSupport:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Byte support requires existing CMP-07 concrete kind approval.', incomplete=True)
+        names = {f.name for f in fields(self.artifact_support.artifact_type)}
+        forbidden = {'key', 'kind', 'scope', 'target', 'semantic_dependencies', 'manifest_metadata'}
+        for name in (self.byte_field, self.digest_field):
+            if name is not None and (type(name) is not str or not name.isidentifier() or name.startswith('_') or name not in names or name in forbidden):
+                _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Content approval must name a separate declared immutable producer field.', incomplete=True)
+        if self.byte_field is None or self.byte_field == self.digest_field:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Byte and optional digest fields must be explicit and distinct.', incomplete=True)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ArtifactContentSource:
+    """Actual compiler artifact object; bytes are read only from approved fields."""
+    artifact: CompilationArtifact
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if not is_dataclass(self.artifact) or isinstance(self.artifact, type) or not self.artifact.__dataclass_params__.frozen:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Content source must retain an actual immutable producer artifact.', incomplete=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactOutputMapping:
+    key: CompilationArtifactKey
+    kind: CompilationArtifactKind
+    location: ArtifactRelativeLocation
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not CompilationArtifactKey or type(self.kind) is not CompilationArtifactKind or type(self.location) is not ArtifactRelativeLocation:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Layout mappings require existing artifact identity/kind and validated location.')
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactOutputLayout:
+    """Explicit complete mapping, or v0 deterministic kind__key.bin mapping."""
+    mappings: tuple[ArtifactOutputMapping, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = _write_sequence(self.mappings, ArtifactOutputMapping)
+        if len({m.key for m in values}) != len(values):
+            _write_reject(CompilationFailure.WRITE_LOCATION_CONFLICT, 'Layout cannot repeat an artifact identity.')
+        object.__setattr__(self, 'mappings', tuple(sorted(values, key=lambda m: m.key.value)))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWriteRequest:
+    compilation_result: CompilationResult
+    manifest_assembly: RuntimeArtifactManifestAssemblyResult
+    artifact_contents: tuple[ArtifactContentSource, ...]
+    destination: ArtifactWriteDestination
+    write_policy: ArtifactWritePolicy = ArtifactWritePolicy.FAIL_IF_EXISTS
+    durability: ArtifactDurabilityPolicy = ArtifactDurabilityPolicy.VISIBLE_COMMIT
+    layout: ArtifactOutputLayout = field(default_factory=ArtifactOutputLayout)
+
+    def __post_init__(self) -> None:
+        if type(self.compilation_result) is not CompilationResult or type(self.manifest_assembly) is not RuntimeArtifactManifestAssemblyResult or type(self.destination) is not ArtifactWriteDestination or type(self.layout) is not ArtifactOutputLayout:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Write request requires actual compiler/assembly evidence, destination and layout.')
+        if self.write_policy is not ArtifactWritePolicy.FAIL_IF_EXISTS:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_POLICY, 'Only exclusive complete-set FAIL_IF_EXISTS is supported.', incomplete=True)
+        if type(self.durability) is not ArtifactDurabilityPolicy:
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_DURABILITY, 'Requested durability policy is not supported.', incomplete=True)
+        object.__setattr__(self, 'artifact_contents', _write_sequence(self.artifact_contents, ArtifactContentSource))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPlannedOutput:
+    descriptor: RuntimeArtifactDescriptor
+    location: ArtifactRelativeLocation
+    source: ArtifactContentSource
+    content: bytes = field(repr=False)
+    declared_digest: ArtifactContentDigest | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.descriptor) is not RuntimeArtifactDescriptor or type(self.location) is not ArtifactRelativeLocation or type(self.source) is not ArtifactContentSource or type(self.content) is not bytes or self.declared_digest is not None and type(self.declared_digest) is not ArtifactContentDigest:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Planned output requires typed descriptor/location/source and exact immutable bytes.')
+
+    @property
+    def expected_byte_length(self) -> int:
+        return len(self.content)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWritePlan:
+    request: ArtifactWriteRequest
+    outputs: tuple[ArtifactPlannedOutput, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not ArtifactWriteRequest:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Plan requires the actual immutable write request.')
+        values = _write_sequence(self.outputs, ArtifactPlannedOutput)
+        manifest = self.request.manifest_assembly.manifest
+        if self.request.manifest_assembly.status is not CompilationStatus.SUCCEEDED or manifest is None or tuple(o.descriptor for o in values) != manifest.artifacts or len({o.location for o in values}) != len(values):
+            _write_reject(CompilationFailure.WRITE_MANIFEST_MISMATCH, 'Plan must contain the complete ordered manifest with unique output locations.')
+        if any(o.source not in self.request.artifact_contents for o in values):
+            _write_reject(CompilationFailure.WRITE_CONTENT_MEMBERSHIP, 'Plan sources must retain the supplied original artifact objects.')
+        object.__setattr__(self, 'outputs', values)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWritePlanner:
+    content_support: tuple[ArtifactByteContentSupport, ...] = ()
+
+    def __post_init__(self) -> None:
+        support = _write_sequence(self.content_support, ArtifactByteContentSupport)
+        if len({s.artifact_support.kind for s in support}) != len(support):
+            _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Byte capability catalog cannot repeat a kind.', incomplete=True)
+        object.__setattr__(self, 'content_support', tuple(sorted(support, key=lambda s: s.artifact_support.kind.value)))
+
+    def plan(self, request: ArtifactWriteRequest) -> ArtifactWritePlan:
+        if type(request) is not ArtifactWriteRequest:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Planner accepts an actual typed write request.')
+        result, assembly = request.compilation_result, request.manifest_assembly
+        if result.status is not CompilationStatus.SUCCEEDED:
+            diagnostic = _write_diagnostic(CompilationFailure.WRITE_COMPILATION_NOT_READY, 'Authoritative compilation is not successful.')
+            raise ArtifactWriteError((*result.diagnostics, diagnostic))
+        if assembly.status is not CompilationStatus.SUCCEEDED or assembly.manifest is None:
+            diagnostic = _write_diagnostic(CompilationFailure.WRITE_MANIFEST_MISMATCH, 'A complete successful CMP-07 assembly is required.')
+            raise ArtifactWriteError((*assembly.diagnostics, diagnostic))
+        manifest = assembly.manifest
+        association = manifest.compilation_association
+        try:
+            current = RuntimeArtifactManifestCompilationAssociation(result, association.request, association.compiler, association.support)
+            # Recheck structural completeness without modifying the accepted manifest.
+            RuntimeArtifactManifest(manifest.identity, manifest.schema_version, manifest.semantic_context, manifest.target, association, manifest.artifacts)
+        except RuntimeArtifactManifestError as error:
+            diagnostic = _write_diagnostic(CompilationFailure.WRITE_MANIFEST_MISMATCH, 'Compiler result and manifest prerequisite binding failed.', manifest=manifest)
+            raise ArtifactWriteError((*error.diagnostics, diagnostic)) from error
+        if current.output_origin is not association.output_origin or current.artifacts != association.artifacts or current.phase_outcomes != association.phase_outcomes:
+            _write_reject(CompilationFailure.WRITE_MANIFEST_MISMATCH, 'Manifest must describe this original compilation output, not another equal-looking invocation.', manifest=manifest)
+        originals = result.artifacts.artifacts
+        sources = request.artifact_contents
+        if len(sources) != len(originals) or len({id(s.artifact) for s in sources}) != len(sources) or any(sum(s.artifact is a for s in sources) != 1 for a in originals):
+            _write_reject(CompilationFailure.WRITE_CONTENT_MEMBERSHIP, 'Each final compiler artifact needs exactly one original source; missing, duplicate and extra sources are rejected.', manifest=manifest)
+        if request.layout.mappings and tuple((m.key, m.kind) for m in request.layout.mappings) != tuple((d.key, d.kind) for d in manifest.artifacts):
+            _write_reject(CompilationFailure.WRITE_LOCATION_CONFLICT, 'Explicit layout must cover exact manifest keys and kinds once.', manifest=manifest)
+        outputs = []
+        for descriptor, artifact in zip(manifest.artifacts, originals):
+            source = next(s for s in sources if s.artifact is artifact)
+            support = next((s for s in self.content_support if s.artifact_support.kind == descriptor.kind and s.artifact_support.artifact_type is type(artifact)), None)
+            if support is None or support.artifact_support not in association.support:
+                _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Artifact has no explicit approved immutable byte-field capability.', manifest=manifest, descriptor=descriptor, incomplete=True)
+            content = getattr(artifact, support.byte_field)
+            if type(content) is not bytes:
+                _write_reject(CompilationFailure.WRITE_UNSUPPORTED_ENCODING, 'Approved bytes must already be defined by the producer; implicit encoding is forbidden.', manifest=manifest, descriptor=descriptor, incomplete=True)
+            digest = None if support.digest_field is None else getattr(artifact, support.digest_field)
+            if support.digest_field is not None and type(digest) is not ArtifactContentDigest:
+                _write_reject(CompilationFailure.WRITE_UNSUPPORTED_CONTENT, 'Declared digest capability needs an actual approved digest value.', manifest=manifest, descriptor=descriptor, incomplete=True)
+            mapping = next((m for m in request.layout.mappings if m.key == descriptor.key), None)
+            location = mapping.location if mapping else ArtifactRelativeLocation(descriptor.kind.value + '__' + descriptor.key.value + '.bin')
+            if any(o.location == location for o in outputs):
+                _write_reject(CompilationFailure.WRITE_LOCATION_CONFLICT, 'Distinct artifacts cannot share a normalized committed location.', manifest=manifest, descriptor=descriptor, location=location)
+            outputs.append(ArtifactPlannedOutput(descriptor, location, source, content, digest))
+        return ArtifactWritePlan(request, tuple(outputs))
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedArtifact:
+    descriptor: RuntimeArtifactDescriptor
+    location: ArtifactRelativeLocation
+    byte_length: int
+    verified_digest: ArtifactContentDigest | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.descriptor) is not RuntimeArtifactDescriptor or type(self.location) is not ArtifactRelativeLocation or type(self.byte_length) is not int or self.byte_length < 0 or self.verified_digest is not None and type(self.verified_digest) is not ArtifactContentDigest:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Receipt entry requires actual typed identity/location/length and optional verified digest.')
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMaterializationReceipt:
+    """Complete-set facts only; retains no byte payload or staging path."""
+    manifest: RuntimeArtifactManifest
+    destination: ArtifactWriteDestination
+    artifacts: tuple[MaterializedArtifact, ...]
+    durability: ArtifactDurabilityPolicy
+
+    def __post_init__(self) -> None:
+        if type(self.manifest) is not RuntimeArtifactManifest or type(self.destination) is not ArtifactWriteDestination or type(self.durability) is not ArtifactDurabilityPolicy:
+            _write_reject(CompilationFailure.WRITE_INVALID_INPUT, 'Receipt requires accepted manifest and committed logical destination/durability.')
+        values = _write_sequence(self.artifacts, MaterializedArtifact)
+        if tuple(v.descriptor for v in values) != self.manifest.artifacts or len({v.location for v in values}) != len(values):
+            _write_reject(CompilationFailure.WRITE_MANIFEST_MISMATCH, 'Receipt must preserve complete manifest identity/kind/membership and unique committed locations.')
+        object.__setattr__(self, 'artifacts', values)
+
+    @property
+    def manifest_identity(self) -> RuntimeArtifactManifestId:
+        return self.manifest.identity
+
+    @property
+    def compilation_association(self) -> RuntimeArtifactManifestCompilationAssociation:
+        return self.manifest.compilation_association
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWriteResult:
+    status: CompilationStatus
+    receipt: ArtifactMaterializationReceipt | None = None
+    diagnostics: tuple[CompilationDiagnostic, ...] = ()
+    committed_destination: ArtifactWriteDestination | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not CompilationStatus:
+            raise TypeError('Writer uses existing compiler statuses.')
+        diagnostics = _write_sequence(self.diagnostics, CompilationDiagnostic)
+        if self.committed_destination is not None and type(self.committed_destination) is not ArtifactWriteDestination:
+            raise TypeError('Visible post-commit failure must retain a typed logical destination.')
+        if self.status is CompilationStatus.SUCCEEDED:
+            if type(self.receipt) is not ArtifactMaterializationReceipt or self.committed_destination != self.receipt.destination or any(d.severity is TypeValidationSeverity.ERROR for d in diagnostics):
+                raise ValueError('Success requires complete receipt and committed destination without errors.')
+        elif self.receipt is not None or not diagnostics:
+            raise ValueError('Non-success has diagnostics and no successful or partial receipt.')
+        object.__setattr__(self, 'diagnostics', diagnostics)
+
+
+class ArtifactWriter(Protocol):
+    def write(self, request: ArtifactWriteRequest) -> ArtifactWriteResult:
+        ...
+
+
+class ArtifactWriteDiagnostics:
+    """CMP-02 diagnostic construction shared with the owning filesystem adapter."""
+    @staticmethod
+    def create(code: CompilationFailure, message: str, **associations: object) -> CompilationDiagnostic:
+        return _write_diagnostic(code, message, **associations)
+
+    @staticmethod
+    def reject(code: CompilationFailure, message: str, **associations: object) -> None:
+        _write_reject(code, message, **associations)
+
+
+# No legacy unassociated write diagnostic is interpreted as a semantic error.
+_LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({**_LEGACY_DIAGNOSTIC_OWNERS,
+    **{code: CompilationDiagnosticOrigin.RESULT for code in CompilationFailure if code.name.startswith('WRITE_')}})
+
+__all__ += ['ArtifactWriteStage', 'ArtifactWritePolicy', 'ArtifactDurabilityPolicy',
+            'ArtifactWriteError', 'ArtifactRelativeLocation', 'ArtifactWriteDestination',
+            'ArtifactContentDigest', 'ArtifactByteContentSupport', 'ArtifactContentSource',
+            'ArtifactOutputMapping', 'ArtifactOutputLayout', 'ArtifactWriteRequest',
+            'ArtifactPlannedOutput', 'ArtifactWritePlan', 'ArtifactWritePlanner',
+            'MaterializedArtifact', 'ArtifactMaterializationReceipt', 'ArtifactWriteResult',
+            'ArtifactWriter', 'ArtifactWriteDiagnostics']
