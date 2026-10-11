@@ -1,6 +1,6 @@
 # Model-Driven Enterprise Ecosystem Platform
 
-A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations and bounded runtime-loading orchestration are implemented; approved runtime producers/decoders, authenticated loading integration, activation, persistence and UI remain future capabilities.
+A contract-driven modular monolith with semantic identity/type contracts, immutable type registration and authoring schema foundations. Compiler foundations, bounded runtime-loading orchestration and a scoped exact-version runtime registry are implemented; approved runtime producers/decoders, authenticated loading integration, activation, persistence and UI remain future capabilities.
 
 ## Quick start
 
@@ -236,3 +236,7 @@ Read-only in-memory Compiled Type IR inspection with exact envelope/type/field/r
 ## RUN-01 — Runtime Artifact Loader
 
 Pure bounded runtime coordinator with explicit trusted authorization, complete digest-verified CMP-07/08/09 source integration, immutable decoder approvals/representations, compatibility/dependency diagnostics and atomic inactive results. New tooling bridge preserves runtime independence; no real format/decoder or authority is invented. No HTTP endpoint or ORM. [Contract and conceptual Mini Sales](docs/runtime/runtime-artifact-loader.md), [ADR-0042](docs/architecture/decisions/ADR-0042-runtime-artifact-loader.md), [static completion report](docs/architecture/run01-verification.md). [188 deferred cases](test-archive/RUN-01/RUN-01-deferred-tests.md), executable tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-01.
+
+## RUN-02 — Runtime Model Registry
+
+Pure application-owned in-memory registry with original RUN-01 evidence, explicit definition extraction/registration/inspection authority, exact scoped semantic versions, atomic locked copy-on-write updates, immutable snapshots, bounded name/version inspection and conflict diagnostics. No default registry, implicit latest, decoder, authority, activation, ORM or endpoint. [Contract and conditional Mini Sales](docs/runtime/runtime-model-registry.md), [ADR-0043](docs/architecture/decisions/ADR-0043-runtime-model-registry.md), [completion record](docs/architecture/run02-verification.md). [198 deferred cases](test-archive/RUN-02/RUN-02-deferred-tests.md), executable tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop RUN-02.

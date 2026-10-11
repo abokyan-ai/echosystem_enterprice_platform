@@ -133,7 +133,8 @@
         "types",
         "typing",
         "uuid",
-        "warnings"
+        "warnings",
+        "threading"
       ],
       "rule_id": "ARCH-DEP-004"
     },

@@ -1,9 +1,11 @@
-"""RUN-01 pure runtime loading: explicit authority, verified bytes, no activation."""
+"""Pure RUN-01 loading and RUN-02 scoped registry; explicit authority, no activation."""
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
+from threading import Lock
+from types import MappingProxyType
 import re
-from typing import Protocol
-from semantic_kernel.public import SemanticContextRef, ElementVersionRef, ElementRef, SemanticElementId, SemanticVersion
+from typing import Protocol, Mapping
+from semantic_kernel.public import SemanticContextRef, ElementVersionRef, ElementRef, SemanticElementId, SemanticVersion, QualifiedName, Namespace
 from compiled_contracts.public import (CompilationArtifactKey, CompilationArtifactKind,
     RuntimeArtifactDescriptor, RuntimeArtifactMetadata, RuntimeArtifactDependencyRef,
     RuntimeArtifactFormatId, RuntimeArtifactFormatVersion, RuntimeTargetId,
@@ -31,6 +33,12 @@ class RuntimeArtifactLoadStage(Enum):
     COMPATIBILITY = 'compatibility'
     DECODE = 'decode'
     ASSEMBLY = 'assembly'
+    REGISTRY_PREFLIGHT = 'registry-preflight'
+    REGISTRY_AUTHORIZATION = 'registry-authorization'
+    REGISTRY_EXTRACTION = 'registry-extraction'
+    REGISTRY_COMMIT = 'registry-commit'
+    REGISTRY_LOOKUP = 'registry-lookup'
+    REGISTRY_SNAPSHOT = 'registry-snapshot'
 
 
 class RuntimeArtifactLoadFailure(Enum):
@@ -55,6 +63,27 @@ class RuntimeArtifactLoadFailure(Enum):
     INCOMPLETE_SET = 'RUN-019'
     INVALID_REPRESENTATION = 'RUN-020'
     COMPATIBILITY_VERSION_MISMATCH = 'RUN-021'
+    REGISTRY_INVALID_REQUEST = 'RUN-101'
+    REGISTRY_INVALID_SCOPE = 'RUN-102'
+    REGISTRY_AUTHORIZATION_UNAVAILABLE = 'RUN-103'
+    REGISTRY_AUTHORIZATION_MISMATCH = 'RUN-104'
+    REGISTRY_LOAD_NOT_SUCCESSFUL = 'RUN-105'
+    REGISTRY_LOAD_ASSOCIATION_MISMATCH = 'RUN-106'
+    REGISTRY_UNSUPPORTED_DEFINITION = 'RUN-107'
+    REGISTRY_INVALID_IDENTITY = 'RUN-108'
+    REGISTRY_CONTEXT_MISMATCH = 'RUN-109'
+    REGISTRY_TARGET_MISMATCH = 'RUN-110'
+    REGISTRY_DUPLICATE_BATCH_IDENTITY = 'RUN-111'
+    REGISTRY_DEFINITION_CONFLICT = 'RUN-112'
+    REGISTRY_MUTABLE_DEFINITION = 'RUN-113'
+    REGISTRY_NOT_FOUND = 'RUN-114'
+    REGISTRY_AMBIGUOUS_NAME = 'RUN-115'
+    REGISTRY_VERSION_REQUIRED = 'RUN-116'
+    REGISTRY_SNAPSHOT_UNAVAILABLE = 'RUN-117'
+    REGISTRY_RESOURCE_LIMIT_EXCEEDED = 'RUN-118'
+    REGISTRY_EXTRACTION_FAILED = 'RUN-119'
+    REGISTRY_NO_DEFINITIONS = 'RUN-120'
+    REGISTRY_INTEGRITY_FAILURE = 'RUN-121'
 
 
 def _tuple(values: object, expected: type) -> bool:
@@ -97,6 +126,11 @@ class RuntimeArtifactLoadDiagnostic:
     semantic_context: SemanticContextRef | None = None
     semantic_origins: tuple[ElementVersionRef, ...] = ()
     reader_diagnostics: tuple[RuntimeArtifactReaderDiagnostic, ...] = ()
+    registry_scope: 'RuntimeModelRegistryScope | None' = None
+    definition_identity: ElementVersionRef | None = None
+    qualified_name: QualifiedName | None = None
+    definition_kind: 'RuntimeModelDefinitionKind | None' = None
+    registry_operation: 'RuntimeModelRegistryOperation | None' = None
 
     def __post_init__(self) -> None:
         if type(self.code) is not RuntimeArtifactLoadFailure or type(self.message) is not str or not self.message or type(self.severity) is not RuntimeLoadSeverity or type(self.stage) is not RuntimeArtifactLoadStage:
@@ -108,6 +142,11 @@ class RuntimeArtifactLoadDiagnostic:
                 raise TypeError('Runtime diagnostic associations require actual typed coordinates.')
         if not _tuple(self.semantic_origins, ElementVersionRef) or not _tuple(self.reader_diagnostics, RuntimeArtifactReaderDiagnostic):
             raise TypeError('Diagnostic origins and reader causes are immutable typed tuples.')
+        for value, expected in ((self.registry_scope, RuntimeModelRegistryScope), (self.definition_identity, ElementVersionRef), (self.qualified_name, QualifiedName), (self.definition_kind, RuntimeModelDefinitionKind), (self.registry_operation, RuntimeModelRegistryOperation)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Registry diagnostic coordinates must use actual immutable runtime/Kernel types.')
+        if self.registry_scope is not None and (self.runtime_target not in (None, self.registry_scope.runtime_target) or self.semantic_context not in (None, self.registry_scope.semantic_context)):
+            raise ValueError('Registry diagnostic scope cannot contradict runtime/context associations.')
 
 
 class RuntimeArtifactLoadError(ValueError):
@@ -116,7 +155,7 @@ class RuntimeArtifactLoadError(ValueError):
             raise TypeError('Expected load rejection has actual diagnostics and non-success status.')
         self.diagnostics = diagnostics
         self.status = status
-        super().__init__('Runtime loading rejected; inspect structured diagnostics.')
+        super().__init__('Runtime operation rejected; inspect structured diagnostics.')
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,7 +452,7 @@ class RuntimeArtifactDecoderCatalog:
         return registration
 
 
-_IMMUTABLE_CONTRACTS = (SemanticContextRef, SemanticElementId, SemanticVersion, ElementVersionRef, ElementRef,
+_IMMUTABLE_CONTRACTS = (SemanticContextRef, SemanticElementId, SemanticVersion, ElementVersionRef, ElementRef, QualifiedName, Namespace,
     CompilationArtifactKey, CompilationArtifactKind, RuntimeArtifactFormatId,
     RuntimeArtifactFormatVersion, RuntimeTargetId, RuntimeCapabilityId, RuntimeCompatibilityVersion)
 
@@ -694,7 +733,8 @@ class RuntimeArtifactLoadEquivalence:
             causes = tuple((c.code, c.severity, c.read_stage, c.manifest_identity,
                 c.artifact_key, c.artifact_kind, c.output_location, c.source_type) for c in d.reader_diagnostics)
             return (d.code, d.severity, d.stage, d.manifest_identity, d.artifact_key,
-                d.artifact_kind, d.runtime_target, d.semantic_context, d.semantic_origins, causes)
+                d.artifact_kind, d.runtime_target, d.semantic_context, d.semantic_origins, causes,
+                d.registry_scope, d.definition_identity, d.qualified_name, d.definition_kind, d.registry_operation)
         if left.status is not right.status or tuple(map(diagnostic_value, left.diagnostics)) != tuple(map(diagnostic_value, right.diagnostics)):
             return False
         if left.loaded_set is None or right.loaded_set is None:
@@ -714,3 +754,835 @@ class RuntimeArtifactLoadEquivalence:
 
 
 __all__ += ['RuntimeArtifactLoadEquivalence']
+
+
+# RUN-02: registry consumes verified RUN-01 objects, never compiler/source bytes.
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistryScope:
+    semantic_context: SemanticContextRef
+    runtime_target: RuntimeTargetId
+
+    def __post_init__(self) -> None:
+        if type(self.semantic_context) is not SemanticContextRef or type(self.semantic_context.context_id) is not SemanticElementId or type(self.runtime_target) is not RuntimeTargetId:
+            raise TypeError('Registry scope is actual semantic context and explicit runtime target, never tenant/name.')
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RuntimeModelDefinitionKind:
+    """Explicit supported runtime definition category; no actual kinds approved here."""
+    value: str
+
+    def __post_init__(self) -> None:
+        RuntimeArtifactFormatId(self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistryKey:
+    scope: RuntimeModelRegistryScope
+    identity: ElementVersionRef
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or not _registry_exact(self.identity):
+            raise TypeError('Registry key requires scope plus actual exact semantic identity/version.')
+
+
+def _registry_exact(value: object) -> bool:
+    return type(value) is ElementVersionRef and type(value.element_id) is SemanticElementId and type(value.version) is SemanticVersion
+
+
+def _registry_identity_order(reference: ElementVersionRef) -> tuple[str, int, int, int]:
+    return (reference.element_id.value, reference.version.major, reference.version.minor, reference.version.patch)
+
+
+def _registry_scope_order(scope: RuntimeModelRegistryScope) -> tuple[str, str]:
+    return (scope.semantic_context.context_id.value, scope.runtime_target.value)
+
+
+def _registry_key_order(key: RuntimeModelRegistryKey) -> tuple:
+    return (*_registry_scope_order(key.scope), *_registry_identity_order(key.identity))
+
+
+class RuntimeModelEmptyRegistrationPolicy(Enum):
+    REJECT_EMPTY = 'reject-empty'
+    ALLOW_VERIFIED_NO_CHANGE = 'allow-verified-no-change'
+
+
+class RuntimeModelConflictPolicy(Enum):
+    REJECT_CONFLICTS = 'reject-conflicts'
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistryPolicy:
+    maximum_definitions_per_registration: int = 1024
+    maximum_definitions_per_scope: int = 8192
+    maximum_total_definitions: int = 32768
+    maximum_snapshot_entries: int = 8192
+    conflict_policy: RuntimeModelConflictPolicy = RuntimeModelConflictPolicy.REJECT_CONFLICTS
+    empty_registration: RuntimeModelEmptyRegistrationPolicy = RuntimeModelEmptyRegistrationPolicy.REJECT_EMPTY
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or v <= 0 for v in (self.maximum_definitions_per_registration, self.maximum_definitions_per_scope, self.maximum_total_definitions, self.maximum_snapshot_entries)) or self.conflict_policy is not RuntimeModelConflictPolicy.REJECT_CONFLICTS or type(self.empty_registration) is not RuntimeModelEmptyRegistrationPolicy:
+            raise ValueError('Registry policy requires positive actual limits and explicit supported conflict/empty policies.')
+
+    def bounded_by(self, server: 'RuntimeModelRegistryPolicy') -> 'RuntimeModelRegistryPolicy':
+        if type(server) is not RuntimeModelRegistryPolicy:
+            raise TypeError('Registry ceilings require trusted immutable server policy.')
+        empty = RuntimeModelEmptyRegistrationPolicy.REJECT_EMPTY if RuntimeModelEmptyRegistrationPolicy.REJECT_EMPTY in (self.empty_registration, server.empty_registration) else RuntimeModelEmptyRegistrationPolicy.ALLOW_VERIFIED_NO_CHANGE
+        return RuntimeModelRegistryPolicy(min(self.maximum_definitions_per_registration, server.maximum_definitions_per_registration),
+            min(self.maximum_definitions_per_scope, server.maximum_definitions_per_scope),
+            min(self.maximum_total_definitions, server.maximum_total_definitions),
+            min(self.maximum_snapshot_entries, server.maximum_snapshot_entries), empty_registration=empty)
+
+
+class RuntimeModelRegistryOperation(Enum):
+    REGISTER = 'register'
+    LOOKUP = 'lookup'
+    INSPECT_NAME = 'inspect-name'
+    ENUMERATE_VERSIONS = 'enumerate-versions'
+    SNAPSHOT = 'snapshot'
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RuntimeModelRegistryBinding:
+    """Instance-specific authority association, not a semantic key or deployment ID."""
+    scopes: tuple[RuntimeModelRegistryScope, ...]
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.scopes) is not tuple or not 1 <= len(self.scopes) <= 128 or not _tuple(self.scopes, RuntimeModelRegistryScope) or len(set(self.scopes)) != len(self.scopes):
+            raise ValueError('Registry owner declares a bounded distinct immutable scope allowlist.')
+        object.__setattr__(self, 'scopes', tuple(sorted(self.scopes, key=_registry_scope_order)))
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistrationRequest:
+    scope: RuntimeModelRegistryScope
+    load_result: RuntimeArtifactLoadResult = field(repr=False)
+    policy: RuntimeModelRegistryPolicy = field(default_factory=RuntimeModelRegistryPolicy)
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or type(self.load_result) is not RuntimeArtifactLoadResult or type(self.policy) is not RuntimeModelRegistryPolicy:
+            raise TypeError('Registration requires actual RUN-01 outcome, scope and policy; no caller definition or Boolean grant.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelLookupRequest:
+    scope: RuntimeModelRegistryScope
+    reference: ElementVersionRef | ElementRef
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or not (_registry_exact(self.reference) or type(self.reference) is ElementRef and type(self.reference.element_id) is SemanticElementId):
+            raise TypeError('Lookup requires actual scope and exact reference or explicit versionless ElementRef.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelNameInspectionRequest:
+    scope: RuntimeModelRegistryScope
+    qualified_name: QualifiedName
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or type(self.qualified_name) is not QualifiedName or type(self.qualified_name.namespace) is not Namespace:
+            raise TypeError('Name inspection uses actual explicit scope and Kernel QualifiedName.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelVersionInspectionRequest:
+    scope: RuntimeModelRegistryScope
+    reference: ElementRef
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or type(self.reference) is not ElementRef or type(self.reference.element_id) is not SemanticElementId:
+            raise TypeError('Version enumeration is an explicit identity-only inspection operation.')
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RuntimeModelRegistryAuthorizationRequest:
+    registry_binding: RuntimeModelRegistryBinding
+    scope: RuntimeModelRegistryScope
+    operation: RuntimeModelRegistryOperation
+    identities: tuple[ElementVersionRef, ...] = ()
+    qualified_name: QualifiedName | None = None
+    element_reference: ElementRef | None = None
+    load_result: RuntimeArtifactLoadResult | None = field(default=None, repr=False)
+    __hash__ = None
+
+    def __post_init__(self) -> None:
+        if type(self.registry_binding) is not RuntimeModelRegistryBinding or type(self.scope) is not RuntimeModelRegistryScope or self.scope not in self.registry_binding.scopes or type(self.operation) is not RuntimeModelRegistryOperation or not _tuple(self.identities, ElementVersionRef) or any(not _registry_exact(r) for r in self.identities) or len(set(self.identities)) != len(self.identities):
+            raise TypeError('Authority request preserves declared registry instance, scope, operation and distinct exact keys.')
+        if self.qualified_name is not None and type(self.qualified_name) is not QualifiedName or self.element_reference is not None and type(self.element_reference) is not ElementRef or self.load_result is not None and type(self.load_result) is not RuntimeArtifactLoadResult:
+            raise TypeError('Authority uses typed optional name/reference/original load association.')
+        if self.operation is RuntimeModelRegistryOperation.REGISTER:
+            if self.load_result is None or self.qualified_name is not None or self.element_reference is not None:
+                raise ValueError('Registration authority binds the actual loaded output and extracted exact identities.')
+        elif self.load_result is not None:
+            raise ValueError('Inspection authority cannot reuse a load/registration grant.')
+        if self.operation is RuntimeModelRegistryOperation.INSPECT_NAME and self.qualified_name is None or self.operation is RuntimeModelRegistryOperation.ENUMERATE_VERSIONS and self.element_reference is None:
+            raise ValueError('Inspection authority retains its exact requested selector.')
+        if self.operation is RuntimeModelRegistryOperation.LOOKUP and (self.qualified_name is not None or not (len(self.identities) == 1 and self.element_reference is None or not self.identities and self.element_reference is not None)):
+            raise ValueError('Lookup authority has one exact key or one identity-only reference, never a fallback selector.')
+        if self.operation is RuntimeModelRegistryOperation.INSPECT_NAME and (self.identities or self.element_reference is not None) or self.operation is RuntimeModelRegistryOperation.ENUMERATE_VERSIONS and (self.identities or self.qualified_name is not None) or self.operation is RuntimeModelRegistryOperation.SNAPSHOT and (self.identities or self.element_reference is not None or self.qualified_name is not None):
+            raise ValueError('Inspection selector must match the exact requested operation.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistryAuthority:
+    """Trusted injected authorizer issues this; caller cannot submit it to register/read."""
+    request: RuntimeModelRegistryAuthorizationRequest
+    source_reference: str
+    decision_reference: str
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not RuntimeModelRegistryAuthorizationRequest:
+            raise TypeError('Registry decision binds the exact internal authorization invocation.')
+        for value in (self.source_reference, self.decision_reference):
+            if type(value) is not str or len(value) > 160 or re.fullmatch(r'[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', value) is None:
+                raise ValueError('Authority references require bounded non-secret logical tokens.')
+
+
+class RuntimeModelRegistryAuthorizer(Protocol):
+    def authorize(self, request: RuntimeModelRegistryAuthorizationRequest) -> RuntimeModelRegistryAuthority:
+        ...
+
+
+class RuntimeRegistryDiagnostics:
+    """Registry-specific association factory using the existing runtime diagnostic model."""
+    @staticmethod
+    def create(code: RuntimeArtifactLoadFailure, message: str, *, scope: RuntimeModelRegistryScope | None = None,
+               operation: RuntimeModelRegistryOperation | None = None, stage: RuntimeArtifactLoadStage = RuntimeArtifactLoadStage.REGISTRY_PREFLIGHT,
+               identity: ElementVersionRef | None = None, name: QualifiedName | None = None,
+               kind: RuntimeModelDefinitionKind | None = None, artifact: LoadedRuntimeArtifact | None = None,
+               incomplete: bool = False, routine: bool = False) -> RuntimeArtifactLoadDiagnostic:
+        return RuntimeArtifactLoadDiagnostic(code, message,
+            RuntimeLoadSeverity.INFO if routine else RuntimeLoadSeverity.WARNING if incomplete else RuntimeLoadSeverity.ERROR,
+            stage, manifest_identity=None if artifact is None else artifact.source_evidence.binding.manifest_identity,
+            artifact_key=None if artifact is None else artifact.descriptor.key,
+            artifact_kind=None if artifact is None else artifact.descriptor.kind,
+            runtime_target=None if scope is None else scope.runtime_target,
+            semantic_context=None if scope is None else scope.semantic_context,
+            semantic_origins=() if artifact is None else artifact.descriptor.metadata.semantic_origins,
+            registry_scope=scope, definition_identity=identity, qualified_name=name, definition_kind=kind,
+            registry_operation=operation)
+
+    @staticmethod
+    def reject(code: RuntimeArtifactLoadFailure, message: str, **associations: object) -> None:
+        raise RuntimeArtifactLoadError((RuntimeRegistryDiagnostics.create(code, message, **associations),),
+            RuntimeArtifactLoadStatus.INCOMPLETE if associations.get('incomplete') else RuntimeArtifactLoadStatus.FAILED)
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableRuntimeModelRegistryAuthorizer:
+    def authorize(self, request: RuntimeModelRegistryAuthorizationRequest) -> RuntimeModelRegistryAuthority:
+        RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_AUTHORIZATION_UNAVAILABLE,
+            'No trusted registry registration/inspection authorization integration is configured.',
+            scope=request.scope, operation=request.operation,
+            stage=RuntimeArtifactLoadStage.REGISTRY_AUTHORIZATION, incomplete=True)
+
+
+class RuntimeModelDefinitionRepresentation(Protocol):
+    """Explicit approved decoded node; no business-instance or new wire format."""
+    @property
+    def identity(self) -> ElementVersionRef:
+        ...
+
+    @property
+    def semantic_context(self) -> SemanticContextRef:
+        ...
+
+    @property
+    def runtime_target(self) -> RuntimeTargetId:
+        ...
+
+    @property
+    def qualified_name(self) -> QualifiedName | None:
+        ...
+
+    @property
+    def definition_kind(self) -> RuntimeModelDefinitionKind:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelDefinitionExtractionResult:
+    status: RuntimeArtifactLoadStatus
+    definitions: tuple[RuntimeModelDefinitionRepresentation, ...] = field(default=(), repr=False)
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeArtifactLoadStatus or type(self.definitions) is not tuple or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic):
+            raise TypeError('Extraction returns explicit status and immutable inventories; concrete nodes are checked by registry.')
+        if self.status is RuntimeArtifactLoadStatus.SUCCEEDED:
+            if any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Successful extraction cannot contain errors.')
+        elif self.definitions or not self.diagnostics:
+            raise ValueError('Non-successful extraction exposes diagnostics and no partial definition nodes.')
+
+
+class RuntimeModelDefinitionExtractor(Protocol):
+    def extract(self, artifact: LoadedRuntimeArtifact, maximum_definitions: int) -> RuntimeModelDefinitionExtractionResult:
+        """Select existing explicitly decoded definition nodes, bounded before collection allocation."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelDefinitionExtractionSupport:
+    decoder_registration: RuntimeArtifactDecoderRegistration = field(repr=False)
+    definition_types: tuple[type, ...]
+    supported_kinds: tuple[RuntimeModelDefinitionKind, ...]
+    extractor: RuntimeModelDefinitionExtractor = field(repr=False)
+    allows_no_definitions: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.decoder_registration) is not RuntimeArtifactDecoderRegistration or type(self.definition_types) is not tuple or not self.definition_types or len(self.definition_types) > 128 or len(set(self.definition_types)) != len(self.definition_types):
+            raise TypeError('Extraction approval binds the actual decoder approval and explicit bounded node classes.')
+        required = {'identity', 'semantic_context', 'runtime_target', 'qualified_name', 'definition_kind'}
+        if any(not _frozen_class(t) or t not in self.decoder_registration.representation_types or not required <= {f.name for f in fields(t)} for t in self.definition_types):
+            raise TypeError('Definition nodes must be declared immutable classes already approved in the decoder graph.')
+        if not _tuple(self.supported_kinds, RuntimeModelDefinitionKind) or not 1 <= len(self.supported_kinds) <= 128 or len(set(self.supported_kinds)) != len(self.supported_kinds) or type(self.allows_no_definitions) is not bool:
+            raise ValueError('Extraction approval declares actual supported kinds and explicit empty-artifact behavior.')
+        if not _frozen_class(type(self.extractor)) or not callable(getattr(type(self.extractor), 'extract', None)):
+            raise TypeError('Extractor is an explicitly injected frozen slotted implementation, not an arbitrary callback.')
+        _inspect_immutable(self.extractor, (type(self.extractor), RuntimeModelDefinitionKind), RuntimeArtifactLoadPolicy())
+        object.__setattr__(self, 'supported_kinds', tuple(sorted(self.supported_kinds)))
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelDefinitionExtractionCatalog:
+    supports: tuple[RuntimeModelDefinitionExtractionSupport, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.supports) is not tuple or len(self.supports) > 128 or not _tuple(self.supports, RuntimeModelDefinitionExtractionSupport) or len({s.decoder_registration.dispatch_key for s in self.supports}) != len(self.supports):
+            raise ValueError('Trusted extraction support is bounded and unambiguous; default catalog is empty.')
+        object.__setattr__(self, 'supports', tuple(sorted(self.supports, key=lambda s: s.decoder_registration.dispatch_key)))
+
+    def select(self, artifact: LoadedRuntimeArtifact, scope: RuntimeModelRegistryScope) -> RuntimeModelDefinitionExtractionSupport:
+        support = next((s for s in self.supports if s.decoder_registration is artifact.decoder_registration), None)
+        if support is None:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_UNSUPPORTED_DEFINITION,
+                'Loaded format has no approved definition extraction contract.', scope=scope,
+                artifact=artifact, stage=RuntimeArtifactLoadStage.REGISTRY_EXTRACTION, incomplete=True)
+        return support
+
+
+def _registry_node_membership(artifact: LoadedRuntimeArtifact, nodes: tuple[RuntimeModelDefinitionRepresentation, ...]) -> bool:
+    """Object association only: no inferred extraction, reference resolution or content equivalence.
+
+    RUN-01's bounded graph inspection has already checked this graph. Identity
+    proves a returned node belongs to the original decoded artifact, never a
+    registry key, duplicate equivalence, authority token or semantic identity.
+    """
+    sought = {id(n) for n in nodes}
+    seen: set[int] = set()
+    stack = [artifact.representation]
+    while stack and sought:
+        value = stack.pop()
+        sought.discard(id(value))
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if type(value) is tuple:
+            stack.extend(value)
+        elif type(value) in (*artifact.decoder_registration.representation_types, *_IMMUTABLE_CONTRACTS):
+            stack.extend(getattr(value, f.name) for f in fields(type(value)))
+    return not sought
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelDefinition:
+    """Registry entry wraps one existing decoded node without copying its model data."""
+    key: RuntimeModelRegistryKey
+    qualified_name: QualifiedName | None
+    definition_kind: RuntimeModelDefinitionKind
+    representation: RuntimeModelDefinitionRepresentation = field(repr=False)
+    load_result: RuntimeArtifactLoadResult = field(repr=False)
+    loaded_artifact: LoadedRuntimeArtifact = field(repr=False)
+    extraction_support: RuntimeModelDefinitionExtractionSupport = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not RuntimeModelRegistryKey or type(self.definition_kind) is not RuntimeModelDefinitionKind or self.qualified_name is not None and (type(self.qualified_name) is not QualifiedName or type(self.qualified_name.namespace) is not Namespace) or type(self.load_result) is not RuntimeArtifactLoadResult or type(self.loaded_artifact) is not LoadedRuntimeArtifact or type(self.extraction_support) is not RuntimeModelDefinitionExtractionSupport:
+            raise TypeError('Registry definition uses actual exact key, typed name/kind and original loaded associations.')
+        loaded = self.load_result.loaded_set
+        artifact = self.loaded_artifact
+        support = self.extraction_support
+        if self.load_result.status is not RuntimeArtifactLoadStatus.SUCCEEDED or type(loaded) is not LoadedRuntimeArtifactSet or not any(a is artifact for a in loaded.artifacts) or support.decoder_registration is not artifact.decoder_registration or type(self.representation) not in support.definition_types:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_ASSOCIATION_MISMATCH, 'Definition requires a successful original load and approved original artifact node.', scope=self.key.scope, identity=self.key.identity)
+        if self.definition_kind not in support.supported_kinds:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_UNSUPPORTED_DEFINITION, 'Definition kind has no explicit registry approval.', scope=self.key.scope, identity=self.key.identity, kind=self.definition_kind, artifact=artifact, incomplete=True)
+        _inspect_immutable(self.representation, artifact.decoder_registration.representation_types, loaded.effective_policy)
+        if not _registry_node_membership(artifact, (self.representation,)):
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_ASSOCIATION_MISMATCH, 'Definition node is not part of the original loaded representation.', scope=self.key.scope, identity=self.key.identity, artifact=artifact)
+        node = self.representation
+        if not _registry_exact(node.identity) or (node.identity, node.qualified_name, node.definition_kind) != (self.key.identity, self.qualified_name, self.definition_kind):
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_IDENTITY, 'Entry must preserve exact encoded identity/name/kind.', scope=self.key.scope, artifact=artifact)
+        if type(node.semantic_context) is not SemanticContextRef or node.semantic_context != self.key.scope.semantic_context or loaded.context.semantic_context != self.key.scope.semantic_context:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_CONTEXT_MISMATCH, 'Encoded definition and original load differ from destination context.', scope=self.key.scope, identity=self.key.identity, artifact=artifact)
+        if type(node.runtime_target) is not RuntimeTargetId or node.runtime_target != self.key.scope.runtime_target or loaded.context.runtime_target != self.key.scope.runtime_target:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_TARGET_MISMATCH, 'Encoded definition and original load differ from destination runtime target.', scope=self.key.scope, identity=self.key.identity, artifact=artifact)
+        metadata = artifact.descriptor.metadata
+        if not metadata.model_wide and self.key.identity not in metadata.semantic_origins:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_ASSOCIATION_MISMATCH, 'Definition identity is outside the artifact’s exact declared origins.', scope=self.key.scope, identity=self.key.identity, artifact=artifact)
+
+    @property
+    def identity(self) -> ElementVersionRef:
+        return self.key.identity
+
+    @property
+    def semantic_context(self) -> SemanticContextRef:
+        return self.key.scope.semantic_context
+
+    @property
+    def runtime_target(self) -> RuntimeTargetId:
+        return self.key.scope.runtime_target
+
+    @property
+    def source_evidence(self) -> RuntimeArtifactSourceEvidence:
+        return self.loaded_artifact.source_evidence
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistrySnapshot:
+    scope: RuntimeModelRegistryScope
+    definitions: tuple[RuntimeModelDefinition, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not RuntimeModelRegistryScope or not _tuple(self.definitions, RuntimeModelDefinition) or any(d.key.scope != self.scope for d in self.definitions):
+            raise TypeError('Snapshot contains actual immutable definitions from exactly one explicit scope.')
+        keys = tuple(d.key for d in self.definitions)
+        if len(set(keys)) != len(keys) or tuple(sorted(keys, key=_registry_key_order)) != keys:
+            raise ValueError('Snapshot preserves distinct exact keys in numeric semantic version order.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistrationResult:
+    status: RuntimeArtifactLoadStatus
+    scope: RuntimeModelRegistryScope | None = None
+    registered_identities: tuple[ElementVersionRef, ...] = ()
+    load_result: RuntimeArtifactLoadResult | None = field(default=None, repr=False)
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeArtifactLoadStatus or self.scope is not None and type(self.scope) is not RuntimeModelRegistryScope or not _tuple(self.registered_identities, ElementVersionRef) or any(not _registry_exact(r) for r in self.registered_identities) or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic):
+            raise TypeError('Registration outcome retains explicit status, scope, immutable keys and actual diagnostics.')
+        if len(set(self.registered_identities)) != len(self.registered_identities) or tuple(sorted(self.registered_identities, key=_registry_identity_order)) != self.registered_identities:
+            raise ValueError('Committed identities are unique and numerically ordered.')
+        if self.status is RuntimeArtifactLoadStatus.SUCCEEDED:
+            if self.scope is None or type(self.load_result) is not RuntimeArtifactLoadResult or self.load_result.status is not RuntimeArtifactLoadStatus.SUCCEEDED or any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Registration success requires original successful load, scope and no errors.')
+        elif self.registered_identities or self.load_result is not None or not self.diagnostics:
+            raise ValueError('Non-success exposes no partial committed membership/evidence.')
+
+
+class RuntimeModelLookupStatus(Enum):
+    FOUND = 'found'
+    NOT_FOUND = 'not-found'
+    INVALID_REQUEST = 'invalid-request'
+    VERSION_REQUIRED = 'version-required'
+    AMBIGUOUS = 'ambiguous'
+    FAILED = 'failed'
+    INCOMPLETE = 'incomplete'
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelLookupResult:
+    status: RuntimeModelLookupStatus
+    definitions: tuple[RuntimeModelDefinition, ...] = field(default=(), repr=False)
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeModelLookupStatus or not _tuple(self.definitions, RuntimeModelDefinition) or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic):
+            raise TypeError('Lookup has explicit routine/failure status and immutable definition candidates/diagnostics.')
+        if self.status in (RuntimeModelLookupStatus.FOUND, RuntimeModelLookupStatus.AMBIGUOUS):
+            if (len(self.definitions) != 1 if self.status is RuntimeModelLookupStatus.FOUND else len(self.definitions) < 2) or any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Found is one exact definition; ambiguous exposes multiple ordered candidates.')
+            keys = tuple(d.key for d in self.definitions)
+            if len(set(keys)) != len(keys) or len({k.scope for k in keys}) != 1 or tuple(sorted(keys, key=_registry_key_order)) != keys:
+                raise ValueError('Lookup candidates require unique ordered keys in one scope.')
+        elif self.definitions or not self.diagnostics:
+            raise ValueError('Negative/failed lookup exposes diagnostics and no placeholder definitions.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelMembershipResult:
+    status: RuntimeModelLookupStatus
+    present: bool | None
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeModelLookupStatus or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic) or self.present is not (True if self.status is RuntimeModelLookupStatus.FOUND else False if self.status is RuntimeModelLookupStatus.NOT_FOUND else None):
+            raise ValueError('Membership is true/false only for authorized found/not-found; otherwise unknown.')
+        if self.status is not RuntimeModelLookupStatus.FOUND and not self.diagnostics or self.status is RuntimeModelLookupStatus.FOUND and any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+            raise ValueError('Membership retains negative/failure evidence; found cannot contain errors.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelVersionInspectionResult:
+    status: RuntimeModelLookupStatus
+    identities: tuple[ElementVersionRef, ...] = ()
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeModelLookupStatus or not _tuple(self.identities, ElementVersionRef) or any(not _registry_exact(r) for r in self.identities) or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic):
+            raise TypeError('Version inspection contains actual explicit status and exact identities.')
+        if self.status is RuntimeModelLookupStatus.FOUND:
+            if not self.identities or len(set(self.identities)) != len(self.identities) or len({r.element_id for r in self.identities}) != 1 or tuple(sorted(self.identities, key=_registry_identity_order)) != self.identities or any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Successful enumeration retains every ordered exact version for one identity.')
+        elif self.identities or not self.diagnostics:
+            raise ValueError('Negative/failed enumeration exposes no partial candidates.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelRegistrySnapshotResult:
+    status: RuntimeArtifactLoadStatus
+    snapshot: RuntimeModelRegistrySnapshot | None = field(default=None, repr=False)
+    diagnostics: tuple[RuntimeArtifactLoadDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeArtifactLoadStatus or not _tuple(self.diagnostics, RuntimeArtifactLoadDiagnostic):
+            raise TypeError('Snapshot result requires explicit status and actual runtime diagnostics.')
+        if self.status is RuntimeArtifactLoadStatus.SUCCEEDED:
+            if type(self.snapshot) is not RuntimeModelRegistrySnapshot or any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Snapshot success contains a coherent immutable snapshot and no errors.')
+        elif self.snapshot is not None or not self.diagnostics:
+            raise ValueError('Non-successful snapshot exposes no partial or unauthorized membership.')
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeModelRegistryState:
+    definitions: tuple[RuntimeModelDefinition, ...]
+    exact: 'Mapping[RuntimeModelRegistryKey, RuntimeModelDefinition]' = field(repr=False)
+    by_scope: 'Mapping[RuntimeModelRegistryScope, tuple[RuntimeModelDefinition, ...]]' = field(repr=False)
+    by_name: 'Mapping[tuple[RuntimeModelRegistryScope, QualifiedName], tuple[RuntimeModelDefinition, ...]]' = field(repr=False)
+    by_identity: 'Mapping[tuple[RuntimeModelRegistryScope, SemanticElementId], tuple[ElementVersionRef, ...]]' = field(repr=False)
+
+
+def _registry_state(definitions: tuple[RuntimeModelDefinition, ...]) -> _RuntimeModelRegistryState:
+    ordered = tuple(sorted(definitions, key=lambda d: _registry_key_order(d.key)))
+    exact = {d.key: d for d in ordered}
+    if len(exact) != len(ordered):
+        raise ValueError('Internal state cannot contain duplicate exact scoped keys.')
+    scopes: dict[RuntimeModelRegistryScope, list[RuntimeModelDefinition]] = {}
+    names: dict[tuple[RuntimeModelRegistryScope, QualifiedName], list[RuntimeModelDefinition]] = {}
+    identities: dict[tuple[RuntimeModelRegistryScope, SemanticElementId], list[ElementVersionRef]] = {}
+    for definition in ordered:
+        scopes.setdefault(definition.key.scope, []).append(definition)
+        identities.setdefault((definition.key.scope, definition.identity.element_id), []).append(definition.identity)
+        if definition.qualified_name is not None:
+            names.setdefault((definition.key.scope, definition.qualified_name), []).append(definition)
+    return _RuntimeModelRegistryState(ordered, MappingProxyType(exact),
+        MappingProxyType({k: tuple(v) for k, v in scopes.items()}),
+        MappingProxyType({k: tuple(v) for k, v in names.items()}),
+        MappingProxyType({k: tuple(v) for k, v in identities.items()}))
+
+
+class RuntimeModelRegistry(Protocol):
+    def register(self, request: RuntimeModelRegistrationRequest) -> RuntimeModelRegistrationResult:
+        ...
+
+    def lookup(self, request: RuntimeModelLookupRequest) -> RuntimeModelLookupResult:
+        ...
+
+    def contains(self, request: RuntimeModelLookupRequest) -> RuntimeModelMembershipResult:
+        ...
+
+    def inspect_name(self, request: RuntimeModelNameInspectionRequest) -> RuntimeModelLookupResult:
+        ...
+
+    def versions(self, request: RuntimeModelVersionInspectionRequest) -> RuntimeModelVersionInspectionResult:
+        ...
+
+    def snapshot(self, scope: RuntimeModelRegistryScope) -> RuntimeModelRegistrySnapshotResult:
+        ...
+
+
+class LocalRuntimeModelRegistry:
+    """Application-owned local catalog. Private lock + immutable copy-on-write state.
+
+    No default/global instance, activation pointer, IO, parsing or cross-process
+    synchronization. Every public read/mutation invokes the trusted authorizer.
+    User-supplied extractors/authority cannot be attached through request data.
+    """
+    __slots__ = ('_binding', '_authorizer', '_catalog', '_policy', '_lock', '_state')
+
+    def __init__(self, scopes: tuple[RuntimeModelRegistryScope, ...], *,
+                 authorizer: RuntimeModelRegistryAuthorizer | None = None,
+                 extraction_catalog: RuntimeModelDefinitionExtractionCatalog | None = None,
+                 policy: RuntimeModelRegistryPolicy | None = None) -> None:
+        self._binding = RuntimeModelRegistryBinding(scopes)
+        self._authorizer = UnavailableRuntimeModelRegistryAuthorizer() if authorizer is None else authorizer
+        self._catalog = RuntimeModelDefinitionExtractionCatalog() if extraction_catalog is None else extraction_catalog
+        self._policy = RuntimeModelRegistryPolicy() if policy is None else policy
+        if not callable(getattr(type(self._authorizer), 'authorize', None)) or type(self._catalog) is not RuntimeModelDefinitionExtractionCatalog or type(self._policy) is not RuntimeModelRegistryPolicy:
+            raise TypeError('Registry owner supplies trusted authority, immutable extraction approvals and server policy.')
+        self._lock = Lock()
+        self._state = _registry_state(())
+
+    def _current_state(self) -> _RuntimeModelRegistryState:
+        """Called only under the private lock; detect malformed internal index shapes."""
+        state = self._state
+        if type(state) is not _RuntimeModelRegistryState or type(state.definitions) is not tuple or any(type(index) is not MappingProxyType for index in (state.exact, state.by_scope, state.by_name, state.by_identity)):
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE,
+                'Internal registry state does not satisfy its immutable index contract.')
+        return state
+
+    def _read_definitions(self, definitions: tuple[RuntimeModelDefinition, ...], scope: RuntimeModelRegistryScope,
+                          operation: RuntimeModelRegistryOperation, name: QualifiedName | None = None) -> None:
+        if not _tuple(definitions, RuntimeModelDefinition) or any(type(d.key) is not RuntimeModelRegistryKey or d.key.scope != scope or name is not None and d.qualified_name != name for d in definitions):
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE,
+                'Internal inspection index contains a definition outside its requested key/scope.', scope=scope, operation=operation)
+        keys = tuple(d.key for d in definitions)
+        if len(set(keys)) != len(keys) or tuple(sorted(keys, key=_registry_key_order)) != keys:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE,
+                'Internal inspection index contains duplicate or unordered exact keys.', scope=scope, operation=operation)
+
+    def _scope(self, scope: RuntimeModelRegistryScope, operation: RuntimeModelRegistryOperation) -> None:
+        if type(scope) is not RuntimeModelRegistryScope or scope not in self._binding.scopes:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_SCOPE,
+                'Requested registry scope is not explicitly declared by this instance.',
+                scope=scope if type(scope) is RuntimeModelRegistryScope else None, operation=operation)
+
+    def _authorize(self, scope: RuntimeModelRegistryScope, operation: RuntimeModelRegistryOperation,
+                   *, identities: tuple[ElementVersionRef, ...] = (), name: QualifiedName | None = None,
+                   reference: ElementRef | None = None, loaded: RuntimeArtifactLoadResult | None = None) -> None:
+        self._scope(scope, operation)
+        invocation = RuntimeModelRegistryAuthorizationRequest(self._binding, scope, operation,
+            identities, name, reference, loaded)
+        authority = self._authorizer.authorize(invocation)
+        if type(authority) is not RuntimeModelRegistryAuthority or authority.request is not invocation:
+            RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_AUTHORIZATION_MISMATCH,
+                'Trusted decision must bind this exact registry instance, operation, scope, selector and loaded batch.',
+                scope=scope, operation=operation, stage=RuntimeArtifactLoadStage.REGISTRY_AUTHORIZATION)
+
+    def _prepare(self, request: RuntimeModelRegistrationRequest, policy: RuntimeModelRegistryPolicy,
+                 diagnostics: list[RuntimeArtifactLoadDiagnostic]) -> tuple[RuntimeModelDefinition, ...]:
+        reject = RuntimeRegistryDiagnostics.reject
+        loaded_result = request.load_result
+        loaded = loaded_result.loaded_set
+        if loaded_result.status is not RuntimeArtifactLoadStatus.SUCCEEDED:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_NOT_SUCCESSFUL,
+                'Registration requires an actual successful RUN-01 result, not a tuple or failed/incomplete output.',
+                scope=request.scope, operation=RuntimeModelRegistryOperation.REGISTER,
+                incomplete=loaded_result.status is RuntimeArtifactLoadStatus.INCOMPLETE)
+        if type(loaded) is not LoadedRuntimeArtifactSet:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_ASSOCIATION_MISMATCH, 'Successful load must retain its actual complete loaded set.', scope=request.scope)
+        if loaded.context.semantic_context != request.scope.semantic_context:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_CONTEXT_MISMATCH, 'Loaded context differs from destination registry scope.', scope=request.scope)
+        if loaded.context.runtime_target != request.scope.runtime_target:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_TARGET_MISMATCH, 'Loaded target differs from destination registry scope.', scope=request.scope)
+        # Recheck existing immutable value/evidence contracts; never read/decode/recompile.
+        RuntimeArtifactLoadResult(loaded_result.status, loaded, loaded_result.diagnostics)
+        LoadedRuntimeArtifactSet(loaded.binding, loaded.context, loaded.authorization, loaded.artifacts, loaded.effective_policy)
+        if len(loaded.artifacts) > loaded.effective_policy.maximum_artifact_count:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_RESOURCE_LIMIT_EXCEEDED, 'Loaded artifact count exceeds original verified bounds.', scope=request.scope)
+        entries: list[RuntimeModelDefinition] = []
+        for artifact in loaded.artifacts:
+            try:
+                LoadedRuntimeArtifact(artifact.descriptor, artifact.context, artifact.representation,
+                    artifact.source_evidence, artifact.decoder_registration, artifact.limits)
+            except RuntimeArtifactLoadError as error:
+                diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_MUTABLE_DEFINITION,
+                    'Loaded representation no longer meets its approved immutable RUN-01 invariants.',
+                    scope=request.scope, artifact=artifact, stage=RuntimeArtifactLoadStage.REGISTRY_EXTRACTION)
+                raise RuntimeArtifactLoadError((*error.diagnostics, diagnostic)) from error
+            support = self._catalog.select(artifact, request.scope)
+            remaining = policy.maximum_definitions_per_registration - len(entries)
+            # Zero is intentionally allowed: an explicitly non-registrable artifact may return ().
+            extracted = support.extractor.extract(artifact, remaining)
+            if type(extracted) is not RuntimeModelDefinitionExtractionResult:
+                reject(RuntimeArtifactLoadFailure.REGISTRY_EXTRACTION_FAILED, 'Approved extractor returned an invalid result contract.', scope=request.scope, artifact=artifact, stage=RuntimeArtifactLoadStage.REGISTRY_EXTRACTION)
+            for diagnostic in extracted.diagnostics:
+                if diagnostic.registry_scope not in (None, request.scope) or diagnostic.semantic_context not in (None, request.scope.semantic_context) or diagnostic.runtime_target not in (None, request.scope.runtime_target) or diagnostic.artifact_key not in (None, artifact.key) or diagnostic.artifact_kind not in (None, artifact.descriptor.kind) or diagnostic.manifest_identity not in (None, loaded.binding.manifest_identity) or diagnostic.registry_operation not in (None, RuntimeModelRegistryOperation.REGISTER) or diagnostic.semantic_origins and diagnostic.semantic_origins != artifact.semantic_origins:
+                    reject(RuntimeArtifactLoadFailure.REGISTRY_EXTRACTION_FAILED, 'Extractor diagnostic association contradicts the current loaded scope/artifact.', scope=request.scope, artifact=artifact, stage=RuntimeArtifactLoadStage.REGISTRY_EXTRACTION)
+                diagnostics.append(replace(diagnostic, registry_scope=request.scope,
+                    semantic_context=request.scope.semantic_context, runtime_target=request.scope.runtime_target,
+                    artifact_key=artifact.key, artifact_kind=artifact.descriptor.kind,
+                    manifest_identity=loaded.binding.manifest_identity, semantic_origins=artifact.semantic_origins,
+                    registry_operation=RuntimeModelRegistryOperation.REGISTER))
+            if extracted.status is not RuntimeArtifactLoadStatus.SUCCEEDED:
+                raise RuntimeArtifactLoadError((RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_EXTRACTION_FAILED,
+                    'A mandatory artifact definition extraction did not succeed.', scope=request.scope, artifact=artifact,
+                    stage=RuntimeArtifactLoadStage.REGISTRY_EXTRACTION, incomplete=extracted.status is RuntimeArtifactLoadStatus.INCOMPLETE),), extracted.status)
+            if len(extracted.definitions) > remaining:
+                reject(RuntimeArtifactLoadFailure.REGISTRY_RESOURCE_LIMIT_EXCEEDED, 'Extracted definition batch exceeds effective limits; no truncation.', scope=request.scope, artifact=artifact)
+            if not extracted.definitions and not support.allows_no_definitions:
+                reject(RuntimeArtifactLoadFailure.REGISTRY_NO_DEFINITIONS, 'Artifact contract requires registrable definitions but exposes none.', scope=request.scope, artifact=artifact, incomplete=True)
+            if any(type(node) not in support.definition_types for node in extracted.definitions):
+                reject(RuntimeArtifactLoadFailure.REGISTRY_UNSUPPORTED_DEFINITION, 'Extractor returned an unapproved concrete definition representation.', scope=request.scope, artifact=artifact, incomplete=True)
+            if not _registry_node_membership(artifact, extracted.definitions):
+                reject(RuntimeArtifactLoadFailure.REGISTRY_LOAD_ASSOCIATION_MISMATCH, 'Extracted nodes are not part of the original decoded artifact; copied/new nodes cannot substitute.', scope=request.scope, artifact=artifact)
+            for node in extracted.definitions:
+                if not _registry_exact(node.identity):
+                    reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_IDENTITY, 'Definition requires its actual encoded exact semantic identity.', scope=request.scope, artifact=artifact)
+                if node.qualified_name is not None and (type(node.qualified_name) is not QualifiedName or type(node.qualified_name.namespace) is not Namespace):
+                    reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_IDENTITY, 'Optional definition name must be an actual Kernel QualifiedName.', scope=request.scope, identity=node.identity, artifact=artifact)
+                if type(node.definition_kind) is not RuntimeModelDefinitionKind or node.definition_kind not in support.supported_kinds:
+                    reject(RuntimeArtifactLoadFailure.REGISTRY_UNSUPPORTED_DEFINITION, 'Encoded definition kind is outside trusted extraction approval.', scope=request.scope, identity=node.identity, artifact=artifact, incomplete=True)
+                entries.append(RuntimeModelDefinition(RuntimeModelRegistryKey(request.scope, node.identity), node.qualified_name,
+                    node.definition_kind, node, loaded_result, artifact, support))
+        ordered = tuple(sorted(entries, key=lambda d: _registry_key_order(d.key)))
+        seen: set[RuntimeModelRegistryKey] = set()
+        conflicts = []
+        for definition in ordered:
+            if definition.key in seen:
+                conflicts.append(RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_DUPLICATE_BATCH_IDENTITY,
+                    'Duplicate exact definition identity within the batch is never merged or exempted by equality.',
+                    scope=request.scope, identity=definition.identity, kind=definition.definition_kind,
+                    artifact=definition.loaded_artifact, operation=RuntimeModelRegistryOperation.REGISTER))
+            seen.add(definition.key)
+        if conflicts:
+            raise RuntimeArtifactLoadError(tuple(conflicts))
+        if not ordered and policy.empty_registration is RuntimeModelEmptyRegistrationPolicy.REJECT_EMPTY:
+            reject(RuntimeArtifactLoadFailure.REGISTRY_NO_DEFINITIONS, 'No individually registrable definitions; empty registration is not approved by policy.', scope=request.scope, incomplete=True)
+        return ordered
+
+    def register(self, request: RuntimeModelRegistrationRequest) -> RuntimeModelRegistrationResult:
+        diagnostics: list[RuntimeArtifactLoadDiagnostic] = []
+        scope = request.scope if type(request) is RuntimeModelRegistrationRequest else None
+        try:
+            if type(request) is not RuntimeModelRegistrationRequest:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST, 'Registry requires an actual typed registration request.', operation=RuntimeModelRegistryOperation.REGISTER)
+            self._scope(request.scope, RuntimeModelRegistryOperation.REGISTER)
+            policy = request.policy.bounded_by(self._policy)
+            proposed = self._prepare(request, policy, diagnostics)
+            identities = tuple(d.identity for d in proposed)
+            # Extraction is pure and bounded; authority checks exact extracted membership before mutation.
+            self._authorize(request.scope, RuntimeModelRegistryOperation.REGISTER, identities=identities, loaded=request.load_result)
+            with self._lock:
+                old = self._current_state()
+                conflicts = tuple(RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_DEFINITION_CONFLICT,
+                    'Exact scoped identity is already registered; no overwrite or guessed idempotent replay.',
+                    scope=request.scope, identity=d.identity, kind=d.definition_kind, artifact=d.loaded_artifact,
+                    operation=RuntimeModelRegistryOperation.REGISTER, stage=RuntimeArtifactLoadStage.REGISTRY_COMMIT)
+                    for d in proposed if d.key in old.exact)
+                if conflicts:
+                    raise RuntimeArtifactLoadError(conflicts)
+                if len(old.definitions) + len(proposed) > policy.maximum_total_definitions or len(old.by_scope.get(request.scope, ())) + len(proposed) > policy.maximum_definitions_per_scope:
+                    RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_RESOURCE_LIMIT_EXCEEDED,
+                        'Atomic registration would exceed trusted total or scope capacity.', scope=request.scope,
+                        operation=RuntimeModelRegistryOperation.REGISTER, stage=RuntimeArtifactLoadStage.REGISTRY_COMMIT)
+                # Construct state and result fully before the single publication assignment.
+                new_state = _registry_state((*old.definitions, *proposed)) if proposed else old
+                result = RuntimeModelRegistrationResult(RuntimeArtifactLoadStatus.SUCCEEDED, request.scope,
+                    identities, request.load_result, tuple(diagnostics))
+                self._state = new_state
+                return result
+        except RuntimeArtifactLoadError as error:
+            associated = tuple(replace(d, registry_operation=RuntimeModelRegistryOperation.REGISTER)
+                if d.code.name.startswith('REGISTRY_') and d.registry_operation is None else d for d in error.diagnostics)
+            return RuntimeModelRegistrationResult(error.status, scope=scope, diagnostics=(*diagnostics, *associated))
+
+    def lookup(self, request: RuntimeModelLookupRequest) -> RuntimeModelLookupResult:
+        try:
+            if type(request) is not RuntimeModelLookupRequest:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST, 'Exact lookup requires an actual typed request.', operation=RuntimeModelRegistryOperation.LOOKUP)
+            exact = type(request.reference) is ElementVersionRef
+            self._authorize(request.scope, RuntimeModelRegistryOperation.LOOKUP,
+                identities=(request.reference,) if exact else (), reference=None if exact else request.reference)
+            if not exact:
+                diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_VERSION_REQUIRED,
+                    'ElementRef does not select one exact version; use authorized version enumeration and explicit selection.',
+                    scope=request.scope, operation=RuntimeModelRegistryOperation.LOOKUP,
+                    stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP, routine=True)
+                return RuntimeModelLookupResult(RuntimeModelLookupStatus.VERSION_REQUIRED, diagnostics=(diagnostic,))
+            with self._lock:
+                key = RuntimeModelRegistryKey(request.scope, request.reference)
+                index = self._current_state().exact
+                present = key in index
+                definition = index.get(key)
+            if present and (type(definition) is not RuntimeModelDefinition or definition.key != key):
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE,
+                    'Internal exact index contains a mismatched definition key.', scope=request.scope,
+                    identity=request.reference, operation=RuntimeModelRegistryOperation.LOOKUP,
+                    stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP)
+            if definition is None:
+                diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_NOT_FOUND,
+                    'Exact scoped version is not registered; no semantic validity judgment or fallback.',
+                    scope=request.scope, identity=request.reference, operation=RuntimeModelRegistryOperation.LOOKUP,
+                    stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP, routine=True)
+                return RuntimeModelLookupResult(RuntimeModelLookupStatus.NOT_FOUND, diagnostics=(diagnostic,))
+            return RuntimeModelLookupResult(RuntimeModelLookupStatus.FOUND, (definition,))
+        except RuntimeArtifactLoadError as error:
+            invalid = any(d.code is RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST for d in error.diagnostics)
+            status = RuntimeModelLookupStatus.INVALID_REQUEST if invalid else RuntimeModelLookupStatus.INCOMPLETE if error.status is RuntimeArtifactLoadStatus.INCOMPLETE else RuntimeModelLookupStatus.FAILED
+            return RuntimeModelLookupResult(status, diagnostics=error.diagnostics)
+
+    def contains(self, request: RuntimeModelLookupRequest) -> RuntimeModelMembershipResult:
+        result = self.lookup(request)
+        return RuntimeModelMembershipResult(result.status,
+            True if result.status is RuntimeModelLookupStatus.FOUND else False if result.status is RuntimeModelLookupStatus.NOT_FOUND else None, result.diagnostics)
+
+    def inspect_name(self, request: RuntimeModelNameInspectionRequest) -> RuntimeModelLookupResult:
+        try:
+            if type(request) is not RuntimeModelNameInspectionRequest:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST, 'Name inspection requires a typed scoped QualifiedName request.', operation=RuntimeModelRegistryOperation.INSPECT_NAME)
+            self._authorize(request.scope, RuntimeModelRegistryOperation.INSPECT_NAME, name=request.qualified_name)
+            with self._lock:
+                candidates = self._current_state().by_name.get((request.scope, request.qualified_name), ())
+            if type(candidates) is not tuple:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE, 'Internal name index is not an immutable candidate tuple.', scope=request.scope, name=request.qualified_name, operation=RuntimeModelRegistryOperation.INSPECT_NAME)
+            if len(candidates) > self._policy.maximum_snapshot_entries:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_SNAPSHOT_UNAVAILABLE, 'Name candidate inventory exceeds bounded inspection capacity; no truncation.', scope=request.scope, name=request.qualified_name, operation=RuntimeModelRegistryOperation.INSPECT_NAME, incomplete=True)
+            self._read_definitions(candidates, request.scope, RuntimeModelRegistryOperation.INSPECT_NAME, request.qualified_name)
+            if not candidates:
+                diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_NOT_FOUND, 'No registered exact definition has this scoped name.', scope=request.scope, name=request.qualified_name, operation=RuntimeModelRegistryOperation.INSPECT_NAME, stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP, routine=True)
+                return RuntimeModelLookupResult(RuntimeModelLookupStatus.NOT_FOUND, diagnostics=(diagnostic,))
+            if len(candidates) == 1:
+                return RuntimeModelLookupResult(RuntimeModelLookupStatus.FOUND, candidates)
+            diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_AMBIGUOUS_NAME, 'Name matches multiple exact versions/identities; none selected implicitly.', scope=request.scope, name=request.qualified_name, operation=RuntimeModelRegistryOperation.INSPECT_NAME, stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP, routine=True)
+            return RuntimeModelLookupResult(RuntimeModelLookupStatus.AMBIGUOUS, candidates, (diagnostic,))
+        except RuntimeArtifactLoadError as error:
+            status = RuntimeModelLookupStatus.INVALID_REQUEST if any(d.code is RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST for d in error.diagnostics) else RuntimeModelLookupStatus.INCOMPLETE if error.status is RuntimeArtifactLoadStatus.INCOMPLETE else RuntimeModelLookupStatus.FAILED
+            return RuntimeModelLookupResult(status, diagnostics=error.diagnostics)
+
+    def versions(self, request: RuntimeModelVersionInspectionRequest) -> RuntimeModelVersionInspectionResult:
+        try:
+            if type(request) is not RuntimeModelVersionInspectionRequest:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST, 'Version enumeration requires a typed scoped ElementRef request.', operation=RuntimeModelRegistryOperation.ENUMERATE_VERSIONS)
+            self._authorize(request.scope, RuntimeModelRegistryOperation.ENUMERATE_VERSIONS, reference=request.reference)
+            with self._lock:
+                references = self._current_state().by_identity.get((request.scope, request.reference.element_id), ())
+            if type(references) is not tuple:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE, 'Internal version index is not an immutable reference tuple.', scope=request.scope, operation=RuntimeModelRegistryOperation.ENUMERATE_VERSIONS)
+            if len(references) > self._policy.maximum_snapshot_entries:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_SNAPSHOT_UNAVAILABLE, 'Version inventory exceeds inspection capacity; no truncated resolution.', scope=request.scope, operation=RuntimeModelRegistryOperation.ENUMERATE_VERSIONS, incomplete=True)
+            if not _tuple(references, ElementVersionRef) or any(not _registry_exact(r) or r.element_id != request.reference.element_id for r in references) or len(set(references)) != len(references) or tuple(sorted(references, key=_registry_identity_order)) != references:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE, 'Internal version index violates exact identity/order invariants.', scope=request.scope, operation=RuntimeModelRegistryOperation.ENUMERATE_VERSIONS)
+            if not references:
+                diagnostic = RuntimeRegistryDiagnostics.create(RuntimeArtifactLoadFailure.REGISTRY_NOT_FOUND, 'No exact versions registered for the scoped identity.', scope=request.scope, operation=RuntimeModelRegistryOperation.ENUMERATE_VERSIONS, stage=RuntimeArtifactLoadStage.REGISTRY_LOOKUP, routine=True)
+                return RuntimeModelVersionInspectionResult(RuntimeModelLookupStatus.NOT_FOUND, diagnostics=(diagnostic,))
+            return RuntimeModelVersionInspectionResult(RuntimeModelLookupStatus.FOUND, references)
+        except RuntimeArtifactLoadError as error:
+            status = RuntimeModelLookupStatus.INVALID_REQUEST if any(d.code is RuntimeArtifactLoadFailure.REGISTRY_INVALID_REQUEST for d in error.diagnostics) else RuntimeModelLookupStatus.INCOMPLETE if error.status is RuntimeArtifactLoadStatus.INCOMPLETE else RuntimeModelLookupStatus.FAILED
+            return RuntimeModelVersionInspectionResult(status, diagnostics=error.diagnostics)
+
+    def snapshot(self, scope: RuntimeModelRegistryScope) -> RuntimeModelRegistrySnapshotResult:
+        try:
+            self._authorize(scope, RuntimeModelRegistryOperation.SNAPSHOT)
+            with self._lock:
+                definitions = self._current_state().by_scope.get(scope, ())
+            if type(definitions) is not tuple:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_INTEGRITY_FAILURE, 'Internal scope index is not an immutable definition tuple.', scope=scope, operation=RuntimeModelRegistryOperation.SNAPSHOT)
+            if len(definitions) > self._policy.maximum_snapshot_entries:
+                RuntimeRegistryDiagnostics.reject(RuntimeArtifactLoadFailure.REGISTRY_SNAPSHOT_UNAVAILABLE,
+                    'Complete scoped snapshot exceeds inspection capacity; no partial snapshot.',
+                    scope=scope, operation=RuntimeModelRegistryOperation.SNAPSHOT,
+                    stage=RuntimeArtifactLoadStage.REGISTRY_SNAPSHOT, incomplete=True)
+            self._read_definitions(definitions, scope, RuntimeModelRegistryOperation.SNAPSHOT)
+            return RuntimeModelRegistrySnapshotResult(RuntimeArtifactLoadStatus.SUCCEEDED,
+                RuntimeModelRegistrySnapshot(scope, definitions))
+        except RuntimeArtifactLoadError as error:
+            return RuntimeModelRegistrySnapshotResult(error.status, diagnostics=error.diagnostics)
+
+
+# The new kind is an immutable coordinate, not automatic definition-kind approval.
+_IMMUTABLE_CONTRACTS += (RuntimeModelDefinitionKind,)
+
+__all__ += ['RuntimeModelRegistryScope', 'RuntimeModelDefinitionKind', 'RuntimeModelRegistryKey',
+    'RuntimeModelEmptyRegistrationPolicy', 'RuntimeModelConflictPolicy', 'RuntimeModelRegistryPolicy',
+    'RuntimeModelRegistryOperation', 'RuntimeModelRegistryBinding', 'RuntimeModelRegistrationRequest',
+    'RuntimeModelLookupRequest', 'RuntimeModelNameInspectionRequest', 'RuntimeModelVersionInspectionRequest',
+    'RuntimeModelRegistryAuthorizationRequest', 'RuntimeModelRegistryAuthority', 'RuntimeModelRegistryAuthorizer',
+    'RuntimeRegistryDiagnostics', 'UnavailableRuntimeModelRegistryAuthorizer', 'RuntimeModelDefinitionRepresentation',
+    'RuntimeModelDefinitionExtractionResult', 'RuntimeModelDefinitionExtractor', 'RuntimeModelDefinitionExtractionSupport',
+    'RuntimeModelDefinitionExtractionCatalog', 'RuntimeModelDefinition', 'RuntimeModelRegistrySnapshot',
+    'RuntimeModelRegistrationResult', 'RuntimeModelLookupStatus', 'RuntimeModelLookupResult',
+    'RuntimeModelMembershipResult', 'RuntimeModelVersionInspectionResult', 'RuntimeModelRegistrySnapshotResult',
+    'RuntimeModelRegistry', 'LocalRuntimeModelRegistry']
