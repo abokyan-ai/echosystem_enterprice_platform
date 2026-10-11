@@ -116,3 +116,7 @@ New `apps/semantic-instance-runtime` composes public Kernel/model-core/compiled-
 ## RUN-04 additions
 
 Existing `apps/semantic-instance-runtime/src/semantic_instance_runtime/public.py` now contains pure read-only complete-instance validator contracts/engine and RUN-03 authoritative acceptance integration. No new production package/source/module;12 modules and51 production Python sources unchanged. Documentation: `docs/runtime/runtime-validation.md`, `docs/architecture/decisions/ADR-0045-runtime-validation.md`, `docs/architecture/run04-verification.md`; exactly one `test-archive/RUN-04/RUN-04-deferred-tests.md` with209 deferred cases. No executable test scaffolding.
+
+## RUN-05 additions
+
+Only production `platform/runtime/runtime-core/src/runtime_core/public.py` modified for immutable execution context, narrow identities/evidence/bounds, factory/create/derive and diagnostics. Existing12 modules/51 production sources unchanged. Added `docs/runtime/execution-context.md`, `docs/architecture/decisions/ADR-0046-execution-context.md`, `docs/architecture/run05-verification.md` and exactly `test-archive/RUN-05/RUN-05-deferred-tests.md` (187 cases). No test scaffold, new API or framework startup.

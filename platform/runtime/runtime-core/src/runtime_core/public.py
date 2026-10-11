@@ -1,6 +1,8 @@
-"""Pure RUN-01 loading and RUN-02 scoped registry; explicit authority, no activation."""
+"""Pure loading/registry and execution context; explicit authority, no activation."""
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
+from datetime import datetime, timezone
+from uuid import UUID
 from threading import Lock
 from types import MappingProxyType
 import re
@@ -1586,3 +1588,569 @@ __all__ += ['RuntimeModelRegistryScope', 'RuntimeModelDefinitionKind', 'RuntimeM
     'RuntimeModelRegistrationResult', 'RuntimeModelLookupStatus', 'RuntimeModelLookupResult',
     'RuntimeModelMembershipResult', 'RuntimeModelVersionInspectionResult', 'RuntimeModelRegistrySnapshotResult',
     'RuntimeModelRegistry', 'LocalRuntimeModelRegistry']
+
+
+# RUN-05: execution metadata is neither authority nor business execution.
+@dataclass(frozen=True, slots=True)
+class RuntimeInvocationId:
+    value: UUID
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not UUID or self.value.version != 4:
+            raise ValueError('Invocation requires an explicitly supplied UUID4, distinct from semantic identities.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionCorrelationId:
+    value: UUID
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not UUID or self.value.version != 4:
+            raise ValueError('Correlation requires an explicitly supplied UUID4; no clock/random allocation here.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionCausationRef:
+    invocation_identity: RuntimeInvocationId
+
+    def __post_init__(self) -> None:
+        if type(self.invocation_identity) is not RuntimeInvocationId:
+            raise TypeError('Causation references an immediate invocation, never correlation or a full parent.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionOperationRef:
+    """Non-secret approved operation token; carries no executable handler or policy."""
+    value: str
+
+    def __post_init__(self) -> None:
+        RuntimeCapabilityId(self.value)
+
+
+def _execution_deadline(value: object) -> bool:
+    # Closed fixed-offset timezone avoids executing arbitrary tzinfo callbacks.
+    return type(value) is datetime and type(value.tzinfo) is timezone
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionConstraints:
+    """Descriptions, not consumed-budget accounting or executor guarantees.
+
+    remaining_depth bounds a later child path; nested count is a per-invocation
+    ceiling, not a shared sibling ledger. None deadline means NOT SPECIFIED.
+    Every requested capability requires a real enforcer; none exists in v0.
+    """
+    remaining_depth: int = 16
+    maximum_nested_invocations: int = 64
+    deadline: datetime | None = None
+    required_capabilities: tuple[RuntimeCapabilityId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or not 0 <= v <= 2 ** 31 - 1 for v in (self.remaining_depth, self.maximum_nested_invocations)):
+            raise ValueError('Execution limits are bounded nonnegative actual integers, not Boolean/unlimited budgets.')
+        if self.deadline is not None and not _execution_deadline(self.deadline):
+            raise TypeError('Deadline is an explicit absolute fixed-offset aware datetime, not relative timeout.')
+        if not _tuple(self.required_capabilities, RuntimeCapabilityId) or len(self.required_capabilities) > 32 or len(set(self.required_capabilities)) != len(self.required_capabilities):
+            raise TypeError('Required enforcers use a bounded distinct immutable existing capability inventory.')
+        if tuple(sorted(self.required_capabilities)) != self.required_capabilities:
+            raise ValueError('Required execution capabilities retain deterministic token order.')
+
+    def bounded_by(self, parent: 'ExecutionConstraints', *, child: bool = False) -> bool:
+        if type(parent) is not ExecutionConstraints or type(child) is not bool:
+            raise TypeError('Constraint comparison uses actual immutable descriptions.')
+        return (self.remaining_depth <= parent.remaining_depth - int(child)
+            and self.maximum_nested_invocations <= parent.maximum_nested_invocations
+            and (parent.deadline is None or self.deadline is not None and self.deadline <= parent.deadline)
+            and set(parent.required_capabilities) <= set(self.required_capabilities))
+
+
+class ExecutionDeadlineStatus(Enum):
+    NOT_SPECIFIED = 'not-specified'
+    BEFORE_DEADLINE = 'before-deadline'
+    REACHED = 'reached'
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionModelSelection:
+    references: tuple[ElementVersionRef | ElementRef, ...]
+    snapshot: RuntimeModelRegistrySnapshot | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.references) is not tuple or not self.references or len(self.references) > 128 or any(type(r) not in (ElementVersionRef, ElementRef) for r in self.references):
+            raise TypeError('Selection requires a bounded explicit nonempty tuple of actual semantic references.')
+        if self.snapshot is not None and type(self.snapshot) is not RuntimeModelRegistrySnapshot:
+            raise TypeError('Model association uses the actual immutable RUN-02 snapshot, never a live registry.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextCreateRequest:
+    invocation_identity: RuntimeInvocationId
+    semantic_context: SemanticContextRef
+    registry_scope: RuntimeModelRegistryScope
+    operation: ExecutionOperationRef
+    model_selection: ExecutionModelSelection
+    correlation_identity: ExecutionCorrelationId
+    constraints: ExecutionConstraints
+    principal: 'ExecutionPrincipalRef | None' = field(default=None, repr=False)
+    authorization: 'ExecutionAuthorizationInput | None' = field(default=None, repr=False)
+    causation: ExecutionCausationRef | None = None
+    requires_active_deployment: bool = False
+
+    def __post_init__(self) -> None:
+        for value, expected in ((self.invocation_identity, RuntimeInvocationId), (self.semantic_context, SemanticContextRef), (self.registry_scope, RuntimeModelRegistryScope), (self.operation, ExecutionOperationRef), (self.model_selection, ExecutionModelSelection), (self.correlation_identity, ExecutionCorrelationId), (self.constraints, ExecutionConstraints)):
+            if type(value) is not expected:
+                raise TypeError('Execution creation has mandatory explicit typed coordinates and limits.')
+        if self.causation is not None and type(self.causation) is not ExecutionCausationRef or type(self.requires_active_deployment) is not bool:
+            raise TypeError('Causation and active-deployment requirement are explicit typed associations.')
+        if self.principal is not None and type(self.principal) is not ExecutionPrincipalRef or self.authorization is not None and type(self.authorization) is not ExecutionAuthorizationInput:
+            raise TypeError('Input evidence is an approved immutable reference association, never raw client metadata.')
+        # Structural association admission does not authenticate or authorize.
+        # Only the configured owner verifier establishes trust for this invocation.
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTrustInvocation:
+    request: ExecutionContextCreateRequest = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not ExecutionContextCreateRequest:
+            raise TypeError('Trust verification is bound to one explicit internal invocation.')
+
+
+class ExecutionTrustDecision(Enum):
+    VERIFIED = 'verified'
+    DENIED = 'denied'
+    UNAVAILABLE = 'unavailable'
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTrustVerification:
+    """Trusted boundary projection of EXISTING evidence, not a policy decision engine.
+
+    The owner must verify authentication, audience/lifetime/revocation and actual
+    original decision dimensions offline before returning VERIFIED. No genuine
+    principal/decision implementation or category is approved in this revision.
+    """
+    invocation: ExecutionTrustInvocation = field(repr=False)
+    decision: ExecutionTrustDecision
+    principal: 'ExecutionPrincipalRef | None' = field(default=None, repr=False)
+    authorization: 'ExecutionAuthorizationInput | None' = field(default=None, repr=False)
+    approved_scope: RuntimeModelRegistryScope | None = None
+    approved_operation: ExecutionOperationRef | None = None
+    approved_models: tuple[ElementVersionRef, ...] = ()
+    approved_constraints: ExecutionConstraints | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.invocation) is not ExecutionTrustInvocation or type(self.decision) is not ExecutionTrustDecision or not _tuple(self.approved_models, ElementVersionRef) or len(self.approved_models) > 128 or any(not _registry_exact(r) for r in self.approved_models):
+            raise TypeError('Trust projection retains an actual invocation and bounded exact model coordinates.')
+        if len(set(self.approved_models)) != len(self.approved_models) or tuple(sorted(self.approved_models, key=_registry_identity_order)) != self.approved_models:
+            raise ValueError('Approved exact model inventory must be distinct and deterministically ordered.')
+        if self.approved_scope is not None and type(self.approved_scope) is not RuntimeModelRegistryScope or self.approved_operation is not None and type(self.approved_operation) is not ExecutionOperationRef or self.approved_constraints is not None and type(self.approved_constraints) is not ExecutionConstraints:
+            raise TypeError('Trust projection dimensions use actual immutable typed contracts.')
+        if self.principal is not None and type(self.principal) is not ExecutionPrincipalRef or self.authorization is not None and type(self.authorization) is not ExecutionAuthorizationInput:
+            raise TypeError('Verification exposes only actual immutable owner-approved reference associations.')
+        if self.decision is ExecutionTrustDecision.VERIFIED and (self.principal is None or self.authorization is None or self.approved_scope is None or self.approved_operation is None or not self.approved_models or self.approved_constraints is None):
+            raise ValueError('VERIFIED requires actual principal/decision references and all mandatory scope dimensions.')
+        if self.decision is not ExecutionTrustDecision.VERIFIED and (self.principal is not None or self.authorization is not None or self.approved_scope is not None or self.approved_operation is not None or self.approved_models or self.approved_constraints is not None):
+            raise ValueError('Denied/unavailable verification exposes no partial trusted associations.')
+
+
+class ExecutionTrustVerifier(Protocol):
+    def verify(self, invocation: ExecutionTrustInvocation) -> ExecutionTrustVerification:
+        """Pure owner verification of existing authenticated evidence; no hidden policy/network execution."""
+        ...
+
+
+def _execution_frozen(t: object) -> bool:
+    return isinstance(t, type) and is_dataclass(t) and t.__dataclass_params__.frozen and hasattr(t, '__slots__')
+
+
+def _execution_reference_safe(value: object, approved: tuple[type, ...]) -> bool:
+    """Narrow owner-approved reference graph; do not change RUN-01 admission.
+
+    Owner approvals must expose references, never raw authentication material.
+    Token syntax alone cannot identify secrets; credential exclusion is an
+    explicit responsibility of the trusted existing authentication boundary.
+    Closed bounded traversal precedes any verifier invocation. No attributes on
+    arbitrary unapproved objects, arbitrary tzinfo, bytes, dict/list or Enum.
+    """
+    stack, count, units = [(value, 0, frozenset())], 0, 0
+    while stack:
+        node, depth, ancestors = stack.pop()
+        count += 1
+        if count > 1024 or depth > 16:
+            return False
+        t, children = type(node), ()
+        if node is None or t in (bool, UUID):
+            pass
+        elif t is datetime:
+            if not _execution_deadline(node):
+                return False
+        elif t is str:
+            # References are bounded logical tokens, not credentials or payloads.
+            if len(node) > 160 or re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.:@-]*', node) is None:
+                return False
+            units += len(node)
+        elif t is int:
+            units += max(1, (node.bit_length() + 7) // 8)
+        elif t is tuple:
+            children = node
+        elif t in approved:
+            if not _execution_frozen(t) or hasattr(node, '__dict__'):
+                return False
+            children = tuple(getattr(node, f.name) for f in fields(t))
+        else:
+            return False
+        if units > 4096 or count + len(stack) + len(children) > 1024:
+            return False
+        if children:
+            if id(node) in ancestors:
+                return False
+            stack.extend((n, depth + 1, ancestors | {id(node)}) for n in reversed(children))
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTrustSupport:
+    principal_types: tuple[type, ...]
+    authorization_types: tuple[type, ...]
+    verifier: ExecutionTrustVerifier = field(repr=False)
+    nested_reference_types: tuple[type, ...] = ()
+
+    def __post_init__(self) -> None:
+        combined = (*self.principal_types, *self.authorization_types, *self.nested_reference_types) if all(type(v) is tuple for v in (self.principal_types, self.authorization_types, self.nested_reference_types)) else ()
+        if not self.principal_types or not self.authorization_types or not combined or len(combined) > 32 or len(set(combined)) != len(combined) or any(not _execution_frozen(t) for t in combined):
+            raise TypeError('Only explicit distinct actual owner-approved immutable principal/decision reference classes qualify.')
+        if not _execution_frozen(type(self.verifier)) or not _execution_reference_safe(self.verifier, (type(self.verifier), *self.nested_reference_types)) or not callable(getattr(type(self.verifier), 'verify', None)):
+            raise TypeError('Execution verifier requires trusted immutable bounded configuration, not HTTP/session state.')
+
+    @property
+    def reference_types(self) -> tuple[type, ...]:
+        return (*self.principal_types, *self.authorization_types, *self.nested_reference_types)
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPrincipalRef:
+    support: ExecutionTrustSupport = field(repr=False)
+    reference: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.support) is not ExecutionTrustSupport or type(self.reference) not in self.support.principal_types or not _execution_reference_safe(self.reference, self.support.reference_types):
+            raise TypeError('Principal association retains an actual approved immutable non-secret identity reference.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAuthorizationInput:
+    """Structural immutable original decision reference, NOT verified authority."""
+    support: ExecutionTrustSupport = field(repr=False)
+    reference: object = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.support) is not ExecutionTrustSupport or type(self.reference) not in self.support.authorization_types or not _execution_reference_safe(self.reference, self.support.reference_types):
+            raise TypeError('Decision input retains only actual approved immutable evidence references, never Boolean authority.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAuthorizationRef:
+    support: ExecutionTrustSupport = field(repr=False)
+    verification: ExecutionTrustVerification = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.support) is not ExecutionTrustSupport or type(self.verification) is not ExecutionTrustVerification or self.verification.decision is not ExecutionTrustDecision.VERIFIED:
+            raise TypeError('Authorization association needs actual owner verification, never caller Boolean authority.')
+        proof = self.verification
+        if proof.principal.support is not self.support or proof.authorization.support is not self.support or not _execution_reference_safe((proof.principal.reference, proof.authorization.reference), self.support.reference_types):
+            raise TypeError('Trusted evidence carries only approved deeply immutable reference representations.')
+        if proof.principal is not proof.invocation.request.principal or proof.authorization is not proof.invocation.request.authorization:
+            raise ValueError('Trust projection must retain the original explicitly submitted reference associations.')
+
+
+class ExecutionContextFailure(Enum):
+    INVALID_REQUEST = 'RUN-401'
+    INVALID_INVOCATION = 'RUN-402'
+    INVALID_SEMANTIC_SCOPE = 'RUN-403'
+    REGISTRY_SCOPE_MISMATCH = 'RUN-404'
+    RUNTIME_TARGET_MISMATCH = 'RUN-405'
+    VERSION_REQUIRED = 'RUN-406'
+    MODEL_SELECTION_MISMATCH = 'RUN-407'
+    PRINCIPAL_UNAVAILABLE = 'RUN-408'
+    UNTRUSTED_PRINCIPAL = 'RUN-409'
+    AUTHORIZATION_UNAVAILABLE = 'RUN-410'
+    AUTHORIZATION_MISMATCH = 'RUN-411'
+    INVALID_CORRELATION = 'RUN-412'
+    INVALID_CAUSATION = 'RUN-413'
+    INVALID_DEADLINE = 'RUN-414'
+    UNSUPPORTED_CONSTRAINT = 'RUN-415'
+    SCOPE_ESCALATION = 'RUN-416'
+    DEADLINE_EXTENSION = 'RUN-417'
+    PRINCIPAL_MISMATCH = 'RUN-418'
+    PREREQUISITE_UNAVAILABLE = 'RUN-419'
+    RESOURCE_LIMIT = 'RUN-420'
+    DEPTH_EXHAUSTED = 'RUN-421'
+    TRUST_DENIED = 'RUN-422'
+    INVALID_PARENT = 'RUN-423'
+    ACTIVATION_UNAVAILABLE = 'RUN-424'
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextDiagnostic:
+    code: ExecutionContextFailure
+    message: str
+    severity: RuntimeLoadSeverity = RuntimeLoadSeverity.ERROR
+    invocation_identity: RuntimeInvocationId | None = None
+    semantic_context: SemanticContextRef | None = None
+    registry_scope: RuntimeModelRegistryScope | None = None
+    definition_identity: ElementVersionRef | None = None
+    correlation_identity: ExecutionCorrelationId | None = None
+    causation: ExecutionCausationRef | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not ExecutionContextFailure or type(self.message) is not str or not self.message or type(self.severity) is not RuntimeLoadSeverity:
+            raise TypeError('Context diagnostics use runtime codes and severity, no compiler phases.')
+        for v, t in ((self.invocation_identity, RuntimeInvocationId), (self.semantic_context, SemanticContextRef), (self.registry_scope, RuntimeModelRegistryScope), (self.definition_identity, ElementVersionRef), (self.correlation_identity, ExecutionCorrelationId), (self.causation, ExecutionCausationRef)):
+            if v is not None and type(v) is not t:
+                raise TypeError('Context diagnostic coordinates must be actual typed immutable identities.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    """Explicit propagation value. Possession is not permanent authority or execution."""
+    invocation_identity: RuntimeInvocationId
+    semantic_context: SemanticContextRef
+    registry_scope: RuntimeModelRegistryScope
+    operation: ExecutionOperationRef
+    model_selection: ExecutionModelSelection
+    principal: ExecutionPrincipalRef = field(repr=False)
+    authorization: ExecutionAuthorizationRef = field(repr=False)
+    correlation_identity: ExecutionCorrelationId
+    constraints: ExecutionConstraints
+    causation: ExecutionCausationRef | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.principal) is not ExecutionPrincipalRef or type(self.authorization) is not ExecutionAuthorizationRef or self.principal.support is not self.authorization.support:
+            raise TypeError('Execution context requires matching trusted principal and authorization associations.')
+        proof = self.authorization.verification
+        request = proof.invocation.request
+        coordinates = (self.invocation_identity, self.semantic_context, self.registry_scope, self.operation, self.model_selection, self.correlation_identity, self.constraints, self.causation)
+        expected = (request.invocation_identity, request.semantic_context, request.registry_scope, request.operation, request.model_selection, request.correlation_identity, request.constraints, request.causation)
+        if any(type(v) is not type(e) for v, e in zip(coordinates, expected)) or coordinates != expected:
+            raise ValueError('Context must preserve the complete verified immutable invocation coordinates.')
+        if self.semantic_context != self.registry_scope.semantic_context or proof.approved_scope != self.registry_scope or proof.approved_operation != self.operation or self.principal is not proof.principal:
+            raise ValueError('Context principal, operation and semantic/runtime scope must match original verification.')
+        refs = self.model_selection.references
+        snapshot = self.model_selection.snapshot
+        if any(not _registry_exact(r) for r in refs) or len(set(refs)) != len(refs) or tuple(sorted(refs, key=_registry_identity_order)) != refs or any(r not in proof.approved_models for r in refs):
+            raise ValueError('Context selection must retain distinct ordered explicitly approved exact definitions.')
+        if snapshot is None or snapshot.scope != self.registry_scope or any(not any(d.identity == r for d in snapshot.definitions) for r in refs):
+            raise ValueError('Context needs the actual coherent exact membership snapshot; no active deployment implied.')
+        if not self.constraints.bounded_by(proof.approved_constraints) or self.constraints.required_capabilities or request.requires_active_deployment:
+            raise ValueError('Context cannot claim unsupported mandatory execution/activation capability or widen approved bounds.')
+        if self.causation is not None and self.causation.invocation_identity == self.invocation_identity:
+            raise ValueError('Immediate causation cannot name the same invocation.')
+
+    def deadline_status(self, now: datetime) -> ExecutionDeadlineStatus:
+        """Explicit trusted current time only; no clock read, cancellation or execution."""
+        if not _execution_deadline(now):
+            raise TypeError('Deadline observation requires an explicitly supplied fixed-offset aware datetime.')
+        if self.constraints.deadline is None:
+            return ExecutionDeadlineStatus.NOT_SPECIFIED
+        return ExecutionDeadlineStatus.REACHED if now >= self.constraints.deadline else ExecutionDeadlineStatus.BEFORE_DEADLINE
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextCreationResult:
+    status: RuntimeArtifactLoadStatus
+    context: ExecutionContext | None = field(default=None, repr=False)
+    diagnostics: tuple[ExecutionContextDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not RuntimeArtifactLoadStatus or not _tuple(self.diagnostics, ExecutionContextDiagnostic):
+            raise TypeError('Creation outcome reuses runtime statuses and immutable context diagnostics.')
+        if self.status is RuntimeArtifactLoadStatus.SUCCEEDED:
+            if type(self.context) is not ExecutionContext or any(d.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+                raise ValueError('Success needs a complete trusted context and no errors.')
+        elif self.context is not None or not self.diagnostics:
+            raise ValueError('Failed/incomplete context creation has diagnostics and no partial context.')
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextDerivationRequest:
+    invocation_identity: RuntimeInvocationId
+    model_selection: ExecutionModelSelection
+    constraints: ExecutionConstraints
+    authorization: 'ExecutionAuthorizationInput | None' = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.invocation_identity) is not RuntimeInvocationId or type(self.model_selection) is not ExecutionModelSelection or type(self.constraints) is not ExecutionConstraints:
+            raise TypeError('Derivation allows only explicit new invocation, model restriction, bounds and fresh authority reference.')
+        if self.authorization is not None and type(self.authorization) is not ExecutionAuthorizationInput:
+            raise TypeError('Child supplies only immutable existing decision evidence for fresh verification.')
+        # No principal/target/operation/semantic/correlation override or delegation.
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextPolicy:
+    maximum_selected_models: int = 128
+    maximum_snapshot_definitions: int = 10000
+    maximum_depth: int = 64
+    maximum_nested_invocations: int = 4096
+
+    def __post_init__(self) -> None:
+        if any(type(getattr(self, f.name)) is not int or getattr(self, f.name) <= 0 for f in fields(self)) or self.maximum_selected_models > 128:
+            raise ValueError('Trusted factory ceilings are positive integers; model inventory cannot exceed contract bound128.')
+
+
+class _ExecutionContextRejected(Exception):
+    def __init__(self, diagnostic: ExecutionContextDiagnostic, incomplete: bool):
+        self.diagnostic, self.incomplete = diagnostic, incomplete
+
+
+class ExecutionContextFactory:
+    """Pure structural/trust association verification. No actual trust adapter exists."""
+    __slots__ = ('_trust', '_policy')
+
+    def __init__(self, *, trust_support: ExecutionTrustSupport | None = None, policy: ExecutionContextPolicy | None = None):
+        if trust_support is not None and type(trust_support) is not ExecutionTrustSupport or policy is not None and type(policy) is not ExecutionContextPolicy:
+            raise TypeError('Factory owner supplies explicit immutable trust integration and construction policy.')
+        self._trust = trust_support
+        self._policy = ExecutionContextPolicy() if policy is None else policy
+
+    def _reject(self, code, message, request=None, *, incomplete=False, reference=None):
+        actual = request if type(request) is ExecutionContextCreateRequest else None
+        raise _ExecutionContextRejected(ExecutionContextDiagnostic(code, message,
+            invocation_identity=actual.invocation_identity if actual is not None else None,
+            semantic_context=actual.semantic_context if actual is not None else None,
+            registry_scope=actual.registry_scope if actual is not None else None,
+            definition_identity=reference,
+            correlation_identity=actual.correlation_identity if actual is not None else None,
+            causation=actual.causation if actual is not None else None), incomplete)
+
+    def _verify(self, request: ExecutionContextCreateRequest) -> tuple[ExecutionPrincipalRef, ExecutionAuthorizationRef]:
+        reject = self._reject
+        if type(request) is not ExecutionContextCreateRequest:
+            reject(ExecutionContextFailure.INVALID_REQUEST, 'Actual typed execution-context request is required.')
+        if type(request.invocation_identity) is not RuntimeInvocationId or type(request.invocation_identity.value) is not UUID or request.invocation_identity.value.version != 4:
+            reject(ExecutionContextFailure.INVALID_INVOCATION, 'Explicit independent invocation UUID4 is required.', request)
+        if type(request.semantic_context) is not SemanticContextRef or type(request.semantic_context.context_id) is not SemanticElementId:
+            reject(ExecutionContextFailure.INVALID_SEMANTIC_SCOPE, 'Actual explicit semantic context identity is required.', request)
+        if request.semantic_context != request.registry_scope.semantic_context:
+            reject(ExecutionContextFailure.REGISTRY_SCOPE_MISMATCH, 'Semantic context differs from the explicit registry scope.', request)
+        if type(request.correlation_identity) is not ExecutionCorrelationId or type(request.correlation_identity.value) is not UUID or request.correlation_identity.value.version != 4:
+            reject(ExecutionContextFailure.INVALID_CORRELATION, 'Explicit independent correlation UUID4 is required.', request)
+        if request.causation is not None and request.causation.invocation_identity == request.invocation_identity:
+            reject(ExecutionContextFailure.INVALID_CAUSATION, 'Causation cannot reference the current invocation.', request)
+        refs, snapshot = request.model_selection.references, request.model_selection.snapshot
+        if len(refs) > self._policy.maximum_selected_models:
+            reject(ExecutionContextFailure.RESOURCE_LIMIT, 'Model selection exceeds the trusted construction ceiling.', request)
+        if any(not _registry_exact(r) for r in refs):
+            reject(ExecutionContextFailure.VERSION_REQUIRED, 'Every selected model requires an exact version, without latest fallback.', request)
+        if len(set(refs)) != len(refs) or tuple(sorted(refs, key=_registry_identity_order)) != refs:
+            reject(ExecutionContextFailure.MODEL_SELECTION_MISMATCH, 'Selected exact references must be distinct and deterministically ordered.', request)
+        if snapshot is None:
+            reject(ExecutionContextFailure.PREREQUISITE_UNAVAILABLE, 'Actual coherent registered-definition snapshot is unavailable.', request, incomplete=True)
+        if snapshot.scope != request.registry_scope:
+            reject(ExecutionContextFailure.RUNTIME_TARGET_MISMATCH if snapshot.scope.runtime_target != request.registry_scope.runtime_target else ExecutionContextFailure.REGISTRY_SCOPE_MISMATCH,
+                'Snapshot scope/target differs from the explicitly requested registry.', request)
+        if len(snapshot.definitions) > self._policy.maximum_snapshot_definitions:
+            reject(ExecutionContextFailure.RESOURCE_LIMIT, 'Snapshot exceeds trusted inspection capacity.', request)
+        try:
+            snapshot.__post_init__()
+        except (TypeError, ValueError):
+            reject(ExecutionContextFailure.MODEL_SELECTION_MISMATCH, 'Snapshot violates the actual immutable membership contract.', request)
+        inventory = {d.identity: d for d in snapshot.definitions}
+        for reference in refs:
+            definition = inventory.get(reference)
+            if definition is None:
+                reject(ExecutionContextFailure.MODEL_SELECTION_MISMATCH, 'Exact selected model is absent from supplied snapshot; no fallback.', request, reference=reference)
+            try:
+                definition.__post_init__()
+            except RuntimeArtifactLoadError:
+                reject(ExecutionContextFailure.PREREQUISITE_UNAVAILABLE, 'Original loaded/registered definition association is unavailable.', request, incomplete=True, reference=reference)
+        if request.constraints.remaining_depth > self._policy.maximum_depth or request.constraints.maximum_nested_invocations > self._policy.maximum_nested_invocations:
+            reject(ExecutionContextFailure.RESOURCE_LIMIT, 'Execution descriptions exceed the trusted factory ceiling.', request)
+        if request.constraints.required_capabilities:
+            reject(ExecutionContextFailure.UNSUPPORTED_CONSTRAINT, 'Requested mandatory executor/cancellation/accounting capability has no approved enforcer.', request, incomplete=True)
+        if request.requires_active_deployment:
+            reject(ExecutionContextFailure.ACTIVATION_UNAVAILABLE, 'Registered model membership provides no active-deployment evidence.', request, incomplete=True)
+        if request.principal is None:
+            reject(ExecutionContextFailure.PRINCIPAL_UNAVAILABLE, 'Trusted authenticated principal reference is unavailable.', request, incomplete=True)
+        if request.authorization is None:
+            reject(ExecutionContextFailure.AUTHORIZATION_UNAVAILABLE, 'Existing execution authorization evidence is unavailable.', request, incomplete=True)
+        if self._trust is None:
+            reject(ExecutionContextFailure.PREREQUISITE_UNAVAILABLE, 'No approved principal/authorization verification boundary exists.', request, incomplete=True)
+        if request.principal.support is not self._trust or not _execution_reference_safe(request.principal.reference, self._trust.reference_types):
+            reject(ExecutionContextFailure.UNTRUSTED_PRINCIPAL, 'Principal must be an actual approved immutable non-secret reference, not client metadata.', request)
+        if request.authorization.support is not self._trust or not _execution_reference_safe((request.principal.reference, request.authorization.reference), self._trust.reference_types):
+            reject(ExecutionContextFailure.AUTHORIZATION_MISMATCH, 'Authorization must be approved immutable evidence, never Boolean/credentials.', request)
+        invocation = ExecutionTrustInvocation(request)
+        proof = self._trust.verifier.verify(invocation)
+        if type(proof) is not ExecutionTrustVerification or proof.invocation is not invocation:
+            reject(ExecutionContextFailure.AUTHORIZATION_MISMATCH, 'Verification does not belong to the original internal invocation.', request)
+        if proof.decision is ExecutionTrustDecision.UNAVAILABLE:
+            reject(ExecutionContextFailure.AUTHORIZATION_UNAVAILABLE, 'Trusted boundary cannot establish current authentication/authorization evidence.', request, incomplete=True)
+        if proof.decision is ExecutionTrustDecision.DENIED:
+            reject(ExecutionContextFailure.TRUST_DENIED, 'Trusted boundary denied the requested protected execution association.', request)
+        if proof.principal is not request.principal or proof.authorization is not request.authorization:
+            reject(ExecutionContextFailure.AUTHORIZATION_MISMATCH, 'Verification must preserve actual original principal/decision references.', request)
+        if proof.approved_scope.runtime_target != request.registry_scope.runtime_target:
+            reject(ExecutionContextFailure.RUNTIME_TARGET_MISMATCH, 'Authorization audience/runtime target differs from requested target.', request)
+        if proof.approved_scope != request.registry_scope or proof.approved_operation != request.operation or any(r not in proof.approved_models for r in refs) or not request.constraints.bounded_by(proof.approved_constraints):
+            reject(ExecutionContextFailure.AUTHORIZATION_MISMATCH, 'Original decision does not cover this exact operation/scope/models/constraints.', request)
+        return proof.principal, ExecutionAuthorizationRef(self._trust, proof)
+
+    @staticmethod
+    def _failure(error: _ExecutionContextRejected) -> ExecutionContextCreationResult:
+        return ExecutionContextCreationResult(RuntimeArtifactLoadStatus.INCOMPLETE if error.incomplete else RuntimeArtifactLoadStatus.FAILED, diagnostics=(error.diagnostic,))
+
+    def create(self, request: ExecutionContextCreateRequest) -> ExecutionContextCreationResult:
+        try:
+            principal, authority = self._verify(request)
+            context = ExecutionContext(request.invocation_identity, request.semantic_context,
+                request.registry_scope, request.operation, request.model_selection, principal, authority,
+                request.correlation_identity, request.constraints, request.causation)
+            return ExecutionContextCreationResult(RuntimeArtifactLoadStatus.SUCCEEDED, context)
+        except _ExecutionContextRejected as error:
+            return self._failure(error)
+
+    def derive(self, parent: ExecutionContext, request: ExecutionContextDerivationRequest) -> ExecutionContextCreationResult:
+        try:
+            if type(parent) is not ExecutionContext or type(request) is not ExecutionContextDerivationRequest:
+                self._reject(ExecutionContextFailure.INVALID_PARENT, 'Derivation requires actual typed parent and restricted child request.')
+            if self._trust is None:
+                self._reject(ExecutionContextFailure.PREREQUISITE_UNAVAILABLE, 'No approved current trust boundary can verify parent/child evidence.', incomplete=True)
+            if parent.principal.support is not self._trust:
+                self._reject(ExecutionContextFailure.INVALID_PARENT, 'Parent uses a different owner trust integration; no ambient adoption.')
+            try:
+                parent.__post_init__()
+            except (TypeError, ValueError):
+                self._reject(ExecutionContextFailure.INVALID_PARENT, 'Parent context violates its verified structural associations.')
+            child = ExecutionContextCreateRequest(request.invocation_identity, parent.semantic_context,
+                parent.registry_scope, parent.operation, request.model_selection, parent.correlation_identity,
+                request.constraints, parent.principal, request.authorization,
+                ExecutionCausationRef(parent.invocation_identity))
+            # Recheck original current evidence; a carried historical context is
+            # not a permanent credential. No parent graph is retained by child.
+            self._verify(parent.authorization.verification.invocation.request)
+            if request.invocation_identity == parent.invocation_identity:
+                self._reject(ExecutionContextFailure.INVALID_INVOCATION, 'Child invocation must have a new explicit identity.', child)
+            if request.model_selection.snapshot is not parent.model_selection.snapshot or any(r not in parent.model_selection.references for r in request.model_selection.references):
+                self._reject(ExecutionContextFailure.SCOPE_ESCALATION, 'Child cannot add model versions or replace the original membership view.', child)
+            if parent.constraints.remaining_depth == 0 or parent.constraints.maximum_nested_invocations == 0:
+                self._reject(ExecutionContextFailure.DEPTH_EXHAUSTED, 'Parent description permits no further child invocation.', child)
+            if parent.constraints.deadline is not None and (request.constraints.deadline is None or request.constraints.deadline > parent.constraints.deadline):
+                self._reject(ExecutionContextFailure.DEADLINE_EXTENSION, 'Child cannot drop or extend a mandatory parent deadline.', child)
+            if not request.constraints.bounded_by(parent.constraints, child=True):
+                self._reject(ExecutionContextFailure.SCOPE_ESCALATION, 'Child cannot reset depth, nested limits or mandatory constraint descriptions.', child)
+            return self.create(child)
+        except _ExecutionContextRejected as error:
+            return self._failure(error)
+
+
+__all__ += ['RuntimeInvocationId', 'ExecutionCorrelationId', 'ExecutionCausationRef',
+    'ExecutionOperationRef', 'ExecutionConstraints', 'ExecutionDeadlineStatus',
+    'ExecutionModelSelection', 'ExecutionContextCreateRequest', 'ExecutionTrustInvocation',
+    'ExecutionTrustDecision', 'ExecutionTrustVerification', 'ExecutionTrustVerifier',
+    'ExecutionTrustSupport', 'ExecutionPrincipalRef', 'ExecutionAuthorizationInput', 'ExecutionAuthorizationRef',
+    'ExecutionContextFailure', 'ExecutionContextDiagnostic', 'ExecutionContext',
+    'ExecutionContextCreationResult', 'ExecutionContextDerivationRequest',
+    'ExecutionContextPolicy', 'ExecutionContextFactory']

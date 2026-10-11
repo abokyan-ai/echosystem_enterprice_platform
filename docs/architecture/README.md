@@ -54,3 +54,7 @@ New `apps/semantic-instance-runtime` composes public Kernel/model-core/compiled-
 ### RUN-04 shared runtime validation
 
 [Runtime validation](../runtime/runtime-validation.md) lives in the existing application composition module; no new module/public edge/core change or circular import. One authoritative complete-instance engine replaces RUN-03 duplicate field value checks and accepts candidates only on complete VALID. Known violations retain INVALID even with unavailable mandatory rules. Genuine TYPE-08/schema/evaluators/authenticated integration remains unavailable. [ADR-0045](decisions/ADR-0045-runtime-validation.md), [209 deferred scenarios](../../test-archive/RUN-04/RUN-04-deferred-tests.md), [completion record](run04-verification.md). New/executed tests0; **DEFERRED / NOT VERIFIED**; stop RUN-04.
+
+### RUN-05 execution context
+
+[Execution context](../runtime/execution-context.md) adds immutable invocation/evidence/scope/selection/trace/bounds and explicit conditional create/derive in existing runtime-core. Specialized earlier contexts remain independent; no new dependencies or reverse imports. Exact scoped snapshot selection, original owner evidence verification and strict child narrowing, no delegation/activation/executor/policy infrastructure. Actual principal/decision/trust integration unavailable. [ADR-0046](decisions/ADR-0046-execution-context.md), [187 deferred cases](../../test-archive/RUN-05/RUN-05-deferred-tests.md), [completion/static record](run05-verification.md). Tests0, **NOT_RUN — DEFERRED / NOT VERIFIED**; no RUN-06.
