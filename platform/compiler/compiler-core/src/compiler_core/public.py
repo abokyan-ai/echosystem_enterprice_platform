@@ -973,9 +973,10 @@ def _type_ir_diagnostic(code: CompilationFailure, message: str, *, reference: El
 
 @dataclass(frozen=True, slots=True)
 class CompiledTypeLowerer:
-    def lower(self, definition: TypeDataComposition, *, request: CompilationRequest, state: CompilationState, identity: SemanticIRId) -> TypeLoweringResult:
+    def lower_payload(self, definition: TypeDataComposition, *, request: CompilationRequest, state: CompilationState, identity: SemanticIRId) -> CompiledTypeIR | TypeLoweringResult:
+        """Single-type lowering only; existing phase result represents expected failure."""
         try:
-            canonical_input = _type_ir_gate(request, state)
+            _type_ir_gate(request, state)
         except SemanticIREnvelopeError as failure:
             return failure.phase_failure(COMPILED_TYPE_IR_PHASE.id)
         if type(identity) is not SemanticIRId:
@@ -1007,8 +1008,18 @@ class CompiledTypeLowerer:
             return CompilationPhaseResult(CompilationPhaseStatus.FAILED, tuple(diagnostics), reason='Mandatory field lowering rejected atomically.')
         try:
             payload = CompiledTypeIR(reference, host.qualified_name, host.context, tuple(fields))
-            sources = tuple(a for a in request.source_associations if a.target.definition == reference)
-            envelope = SemanticIREnvelopeFactory().create(identity=identity, schema_version=SemanticIRSchemaVersion.V0, canonical_input=canonical_input, semantic_context=request.context.scope, payload_kind=SemanticIRPayloadKind.COMPILED_TYPE_IR, payload=payload, definition_origins=(reference,), produced_by_phase=COMPILED_TYPE_IR_PHASE.id, source_associations=sources)
+        except SemanticIREnvelopeError as failure:
+            return failure.phase_failure(COMPILED_TYPE_IR_PHASE.id)
+        return payload
+
+    def lower(self, definition: TypeDataComposition, *, request: CompilationRequest, state: CompilationState, identity: SemanticIRId) -> TypeLoweringResult:
+        """Backward-compatible CMP-04 single-type envelope adapter."""
+        payload = self.lower_payload(definition, request=request, state=state, identity=identity)
+        if type(payload) is CompilationPhaseResult:
+            return payload
+        try:
+            sources = tuple(a for a in request.source_associations if a.target.definition == payload.type_identity)
+            envelope = SemanticIREnvelopeFactory().create(identity=identity, schema_version=SemanticIRSchemaVersion.V0, canonical_input=SemanticIRCanonicalInput(request), semantic_context=request.context.scope, payload_kind=SemanticIRPayloadKind.COMPILED_TYPE_IR, payload=payload, definition_origins=(payload.type_identity,), produced_by_phase=COMPILED_TYPE_IR_PHASE.id, source_associations=sources)
         except SemanticIREnvelopeError as failure:
             return failure.phase_failure(COMPILED_TYPE_IR_PHASE.id)
         return CompilationPhaseResult(CompilationPhaseStatus.COMPLETED, ir_envelopes=(envelope,))
@@ -1024,8 +1035,26 @@ class CompiledTypeIRIdentityBinding:
             raise TypeError('Representation assignment binds an explicit exact source coordinate to an existing IR token.')
 
 
+def _type_pass_diagnostics(diagnostics: tuple[CompilationDiagnostic, ...], reference: ElementVersionRef, identity: SemanticIRId) -> tuple[CompilationDiagnostic, ...]:
+    """Add only missing local type/IR context; retain existing field/cause evidence."""
+    values = []
+    for diagnostic in diagnostics:
+        association = diagnostic.association
+        if diagnostic.reference is not None and diagnostic.reference != reference or association is not None and association.semantic_target is not None and association.semantic_target.reference != reference:
+            raise TypeError('Single-type failure diagnostic belongs to another canonical definition.')
+        if association is None:
+            association = CompilationDiagnosticAssociation(CompilationDiagnosticOrigin.PHASE, COMPILED_TYPE_IR_PHASE.id)
+        target = association.semantic_target or ModelDiagnosticTarget(ModelDiagnosticTargetKind.DEFINITION, reference)
+        if diagnostic.reference is None or association.semantic_target is None or association.ir_identity is None:
+            association = replace(association, semantic_target=target, ir_identity=association.ir_identity or identity)
+            diagnostic = replace(diagnostic, reference=reference, association=association)
+        values.append(diagnostic)
+    return tuple(values)
+
+
 @dataclass(frozen=True, slots=True)
-class CompiledTypeLoweringPhase:
+class TypeCompilerPass:
+    """Canonical type orchestration; coordinator alone commits immutable state."""
     identities: tuple[CompiledTypeIRIdentityBinding, ...]
     descriptor: CompilationPhaseDescriptor = field(default=COMPILED_TYPE_IR_PHASE, init=False)
 
@@ -1039,12 +1068,17 @@ class CompiledTypeLoweringPhase:
 
     def execute(self, request: CompilationRequest, state: CompilationState) -> CompilationPhaseResult:
         try:
-            _type_ir_gate(request, state)
+            canonical_input = _type_ir_gate(request, state)
+            for envelope in state.ir_envelopes:
+                _ir_current(envelope, request, self.descriptor.id)
+            if any(o.descriptor.id == self.descriptor.id for o in state.phase_outcomes) or any(e.produced_by_phase == self.descriptor.id for e in state.ir_envelopes):
+                _ir_reject(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'Type pass output slot is already occupied; rerun is not idempotent.', phase_id=self.descriptor.id)
         except SemanticIREnvelopeError as failure:
             return failure.phase_failure(self.descriptor.id)
         by_definition = {i.definition: i.identity for i in self.identities}
-        references = request.canonical_model.references
-        extra = tuple(i.definition for i in self.identities if not request.canonical_model.contains(i.definition))
+        definitions = tuple(d for d in request.canonical_model.list_definitions() if d.type_definition.kind == SemanticElementKinds.TYPE_DEFINITION)
+        references = tuple(ElementVersionRef(d.type_definition.id, d.type_definition.version) for d in definitions)
+        extra = tuple(sorted((i.definition for i in self.identities if not request.canonical_model.contains(i.definition)), key=lambda r: (r.element_id.value, r.version.major, r.version.minor, r.version.patch)))
         missing = tuple(r for r in references if r not in by_definition)
         if extra or missing:
             diagnostics = tuple(_type_ir_diagnostic(CompilationFailure.TYPE_IR_INPUT_MISMATCH, 'Representation assignment is outside current canonical membership.', reference=r) for r in extra) + tuple(_type_ir_diagnostic(CompilationFailure.TYPE_IR_IDENTITY_COVERAGE, 'A selected canonical type has no explicit representation identity.', reference=r, severity=TypeValidationSeverity.WARNING) for r in missing)
@@ -1052,19 +1086,58 @@ class CompiledTypeLoweringPhase:
         candidates = []
         diagnostics = []
         statuses = []
+        seen = {e.identity for e in state.ir_envelopes}
+        occupied = {e.payload.type_identity for e in state.ir_envelopes if e.payload_kind is SemanticIRPayloadKind.COMPILED_TYPE_IR}
+        for reference in references:
+            identity = by_definition[reference]
+            if identity in seen:
+                diagnostics.append(_type_ir_diagnostic(CompilationFailure.IR_DUPLICATE_IDENTITY, 'Explicit type representation identity collides with existing or same-pass output.', reference=reference, identity=identity))
+            if reference in occupied:
+                diagnostics.append(_type_ir_diagnostic(CompilationFailure.IR_INCOMPATIBLE_HANDOFF, 'An exact compiled type output slot is already occupied.', reference=reference, identity=identity))
+            seen.add(identity)
+        if diagnostics:
+            return CompilationPhaseResult(CompilationPhaseStatus.FAILED, tuple(diagnostics), reason='Type output identity or exact source slot conflict; no partial output.')
         lowerer = CompiledTypeLowerer()
-        for definition in request.canonical_model.list_definitions():
+        factory = SemanticIREnvelopeFactory()
+        for definition in definitions:
             reference = ElementVersionRef(definition.type_definition.id, definition.type_definition.version)
-            result = lowerer.lower(definition, request=request, state=state, identity=by_definition[reference])
-            statuses.append(result.status)
-            diagnostics.extend(result.diagnostics)
-            candidates.extend(result.ir_envelopes)
+            identity = by_definition[reference]
+            result = lowerer.lower_payload(definition, request=request, state=state, identity=identity)
+            if type(result) is CompilationPhaseResult:
+                # A successful lowerer payload is mandatory, never an empty COMPLETED result.
+                if result.status not in (CompilationPhaseStatus.FAILED, CompilationPhaseStatus.INCOMPLETE):
+                    raise TypeError('Payload lowerer must return a compiled type or expected failed/incomplete phase result.')
+                statuses.append(result.status)
+                diagnostics.extend(_type_pass_diagnostics(result.diagnostics, reference, identity))
+                continue
+            if type(result) is not CompiledTypeIR:
+                raise TypeError('Payload lowerer returned an unsupported result contract.')
+            try:
+                sources = tuple(a for a in request.source_associations if a.target.definition == reference)
+                candidates.append(factory.create(identity=identity, schema_version=SemanticIRSchemaVersion.V0, canonical_input=canonical_input, semantic_context=request.context.scope, payload_kind=SemanticIRPayloadKind.COMPILED_TYPE_IR, payload=result, definition_origins=(reference,), produced_by_phase=self.descriptor.id, source_associations=sources))
+            except SemanticIREnvelopeError as failure:
+                rejected = failure.phase_failure(self.descriptor.id)
+                statuses.append(rejected.status)
+                diagnostics.extend(_type_pass_diagnostics(rejected.diagnostics, reference, identity))
+                continue
+            statuses.append(CompilationPhaseStatus.COMPLETED)
         if any(status is not CompilationPhaseStatus.COMPLETED for status in statuses):
             status = CompilationPhaseStatus.FAILED if CompilationPhaseStatus.FAILED in statuses else CompilationPhaseStatus.INCOMPLETE
             return CompilationPhaseResult(status, tuple(diagnostics), reason='One or more selected type definitions could not be lowered; no partial IR output.')
+        try:
+            # Preflight the actual commit contract; preserve canonical emission order.
+            _merge_ir(state.ir_envelopes, tuple(candidates), request, self.descriptor)
+        except SemanticIREnvelopeError as failure:
+            return failure.phase_failure(self.descriptor.id)
         return CompilationPhaseResult(CompilationPhaseStatus.COMPLETED, tuple(diagnostics), ir_envelopes=tuple(candidates))
+
+
+# One implementation/phase identity; old composition remains source compatible.
+CompiledTypeLoweringPhase = TypeCompilerPass
+TYPE_COMPILER_PASS_PHASE = COMPILED_TYPE_IR_PHASE
 
 
 __all__ += ['CompiledTypeReferenceIR', 'CompiledFieldConstraintsIR', 'CompiledFieldIR',
             'CompiledTypeIR', 'COMPILED_TYPE_IR_PHASE', 'TypeLoweringResult',
-            'CompiledTypeLowerer', 'CompiledTypeIRIdentityBinding', 'CompiledTypeLoweringPhase']
+            'CompiledTypeLowerer', 'CompiledTypeIRIdentityBinding', 'CompiledTypeLoweringPhase',
+            'TypeCompilerPass', 'TYPE_COMPILER_PASS_PHASE']

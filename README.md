@@ -208,3 +208,7 @@ Existing compiler-core adds explicit request-scoped IR identity/schema, a closed
 ## CMP-04 — Compiled Type IR
 
 Existing compiler-core adds immutable compiled type/field payloads, reuses precise TYPE-04 constraints and TYPE-05 references and explicitly lowers accepted original canonical type/data members. The composed type phase preserves canonical/field order, requires explicit representation IDs and emits no partial successful set. CMP-03 explicitly supports compiled-type-ir; IR does not satisfy final artifact readiness. [Contract/unexecuted Mini Sales](docs/compiler/compiled-type-ir.md), [ADR-0035](docs/architecture/decisions/ADR-0035-compiled-type-ir.md), [record](docs/architecture/cmp04-verification.md), [archive](test-archive/CMP-04/README.md): **157** documented scenarios. Tests created/executed **0**, **DEFERRED / NOT VERIFIED**. No generator/API/ORM/runtime. Full TYPE-01/general SK-11/richer facets remain gaps. Stop CMP-04.
+
+## CMP-05 — Type Compiler Pass
+
+Existing compiler-core now exposes TypeCompilerPass, reusing CMP-04 lower_payload and CMP-03 factory; old CompiledTypeLoweringPhase aliases the same implementation/stable identity. Canonical multi-version ordering, explicit request-local IDs, collision/rerun/exact-origin guards and atomic existing coordinator handoff; no partial failure output. No dependency/module/HTTP/ORM/runtime/generator additions. [Contract and unexecuted Mini Sales](docs/compiler/type-compiler-pass.md). **129** deferred scenarios, tests created/executed **0**, **DEFERRED / NOT VERIFIED**. Stop CMP-05.
