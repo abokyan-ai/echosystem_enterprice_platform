@@ -87,3 +87,7 @@ Python domain is independent of Django initialization; PyYAML 6.0.3 installed, D
 ## CMP-08 consumer
 
 [Artifact Writer](artifact-writer.md) requires the original successful assembly and supplied final compilation result, rechecks original invocation/configuration/evidence and exact descriptor membership, then matches original artifact objects to explicitly approved byte fields. Manifest remains metadata; no payload added or IR promotion. Writer receipt records real complete materialization only, not publication/runtime authority. Linux infrastructure is separate tooling; runtime imports unchanged. **158** CMP-08 cases deferred, tests executed **0**.
+
+## CMP-09 retrieval boundary
+
+[Artifact Reader](artifact-reader.md) revalidates declared manifest/original receipt association and selected membership, without rebuilding a manifest from files or rerunning compiler phases. Reads only actual receipt locations through approved roots, with effective server-bounded limits and current length/available digest evidence. Manifest is not physical presence/integrity/authorization proof. No runtime imports or Type IR promotion.

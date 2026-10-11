@@ -18,3 +18,5 @@ Future deferred-suite execution requires an explicit later user instruction perm
 Historical executed verification records remain factual and must not be erased or relabeled. A new archive's NOT_RUN status records execution under that archive revision; it does not negate earlier test runs.
 
 Task-specific exception: the latest CMP-08 attachment, section 37, explicitly requires exactly `test-archive/CMP-08/CMP-08-deferred-tests.md` and prohibits archive README/additional specification files. Honor that more recent instruction for CMP-08 only. Other tasks retain the standing archive layout unless the user explicitly supersedes it. This exception does not authorize test execution or the next task.
+
+Task-specific exception: latest CMP-09 attachment section 45 requires exactly `test-archive/CMP-09/CMP-09-deferred-tests.md` and prohibits README/additional archive files. Honor this more recent rule for CMP-09 only; test deferral and stop-after-task requirements remain mandatory.

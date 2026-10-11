@@ -117,6 +117,25 @@ class CompilationFailure(Enum):
     WRITE_UNSUPPORTED_ATOMICITY = 'CMP-059'
     WRITE_UNSUPPORTED_DURABILITY = 'CMP-060'
     WRITE_UNSUPPORTED_ENCODING = 'CMP-061'
+    READ_INVALID_REQUEST = 'CMP-062'
+    READ_MANIFEST_MISMATCH = 'CMP-063'
+    READ_RECEIPT_MISMATCH = 'CMP-064'
+    READ_UNKNOWN_ARTIFACT = 'CMP-065'
+    READ_INVALID_SELECTION = 'CMP-066'
+    READ_UNSUPPORTED_SOURCE = 'CMP-067'
+    READ_UNSAFE_PATH = 'CMP-068'
+    READ_UNSUPPORTED_FILE_TYPE = 'CMP-069'
+    READ_MISSING_FILE = 'CMP-070'
+    READ_ACCESS_DENIED = 'CMP-071'
+    READ_SIZE_LIMIT_EXCEEDED = 'CMP-072'
+    READ_SIZE_MISMATCH = 'CMP-073'
+    READ_DIGEST_MISMATCH = 'CMP-074'
+    READ_REQUIRED_DIGEST_MISSING = 'CMP-075'
+    READ_IO_FAILED = 'CMP-076'
+    READ_INCOMPLETE_SET = 'CMP-077'
+    READ_CONCURRENT_MODIFICATION = 'CMP-078'
+    READ_UNSUPPORTED_DIGEST = 'CMP-079'
+    READ_INVALID_POLICY = 'CMP-080'
 
 
 def _phase_id(value: str) -> None:
@@ -158,10 +177,16 @@ class CompilationDiagnosticAssociation:
     manifest_identity: 'RuntimeArtifactManifestId | None' = None
     write_stage: 'ArtifactWriteStage | None' = None
     output_location: 'ArtifactRelativeLocation | None' = None
+    read_stage: 'ArtifactReadStage | None' = None
+    read_source_type: 'ArtifactReadSourceType | None' = None
 
     def __post_init__(self) -> None:
         if self.write_stage is not None and type(self.write_stage) is not ArtifactWriteStage:
             raise TypeError('Write diagnostics require an explicit bounded stage.')
+        if self.read_stage is not None and type(self.read_stage) is not ArtifactReadStage:
+            raise TypeError('Read diagnostics require an explicit bounded stage.')
+        if self.read_source_type is not None and type(self.read_source_type) is not ArtifactReadSourceType:
+            raise TypeError('Read diagnostics require an explicit bounded source type.')
         if self.output_location is not None and type(self.output_location) is not ArtifactRelativeLocation:
             raise TypeError('Write diagnostics expose only validated relative locations.')
         if self.artifact_target is not None and type(self.artifact_target) is not CompilationArtifactTarget:
@@ -1298,6 +1323,7 @@ def _diagnostic_semantics(diagnostic: CompilationDiagnostic) -> tuple[object, ..
         association.semantic_context, association.ir_identity,
         association.related_artifact_targets, association.manifest_identity,
         association.write_stage, association.output_location,
+        association.read_stage, association.read_source_type,
     )
     # Message and source paths are presentation, never diagnostic ordering keys.
     return (diagnostic.code, diagnostic.severity, diagnostic.phase_id,
@@ -1963,3 +1989,276 @@ __all__ += ['ArtifactWriteStage', 'ArtifactWritePolicy', 'ArtifactDurabilityPoli
             'ArtifactPlannedOutput', 'ArtifactWritePlan', 'ArtifactWritePlanner',
             'MaterializedArtifact', 'ArtifactMaterializationReceipt', 'ArtifactWriteResult',
             'ArtifactWriter', 'ArtifactWriteDiagnostics']
+
+
+class ArtifactReadStage(Enum):
+    PREFLIGHT = 'preflight'
+    SOURCE = 'source'
+    OPEN = 'open'
+    READ = 'read'
+    VERIFY = 'verify'
+    CLOSE = 'close'
+
+
+class ArtifactReadSourceType(Enum):
+    LOCAL_FILESYSTEM = 'local-filesystem'
+
+
+# Same approved logical root/output reference as CMP-08, without a second path model.
+ArtifactReadSource = ArtifactWriteDestination
+
+
+class ArtifactReadSelectionMode(Enum):
+    ONE_ARTIFACT = 'one-artifact'
+    EXPLICIT_ARTIFACT_SET = 'explicit-artifact-set'
+    ALL_DECLARED_ARTIFACTS = 'all-declared-artifacts'
+
+
+class ArtifactReadIntegrity(Enum):
+    SIZE_VERIFIED = 'size-verified'
+    DIGEST_VERIFIED = 'digest-verified'
+
+
+class ArtifactReadError(ValueError):
+    def __init__(self, diagnostics: tuple[CompilationDiagnostic, ...], status: CompilationStatus = CompilationStatus.FAILED) -> None:
+        if type(diagnostics) is not tuple or not diagnostics or any(type(d) is not CompilationDiagnostic for d in diagnostics) or status not in (CompilationStatus.FAILED, CompilationStatus.INCOMPLETE):
+            raise TypeError('Read failure preserves actual diagnostics and non-success status.')
+        self.diagnostics = diagnostics
+        self.status = status
+        super().__init__('Artifact retrieval rejected; inspect structured diagnostics.')
+
+
+class ArtifactReadDiagnostics:
+    @staticmethod
+    def create(code: CompilationFailure, message: str, *, stage: ArtifactReadStage = ArtifactReadStage.PREFLIGHT, manifest: RuntimeArtifactManifest | None = None, key: CompilationArtifactKey | None = None, entry: MaterializedArtifact | None = None, incomplete: bool = False) -> CompilationDiagnostic:
+        artifact = CompilationArtifactTarget(entry.descriptor.key, entry.descriptor.kind) if entry is not None else None if key is None else CompilationArtifactTarget(key)
+        association = CompilationDiagnosticAssociation(
+            CompilationDiagnosticOrigin.RESULT, artifact_target=artifact,
+            manifest_identity=None if manifest is None else manifest.identity,
+            semantic_context=None if manifest is None else manifest.semantic_context,
+            output_location=None if entry is None else entry.location,
+            read_stage=stage, read_source_type=ArtifactReadSourceType.LOCAL_FILESYSTEM)
+        return CompilationDiagnostic(code, message, TypeValidationSeverity.WARNING if incomplete else TypeValidationSeverity.ERROR, association=association)
+
+    @staticmethod
+    def reject(code: CompilationFailure, message: str, **associations: object) -> None:
+        diagnostic = ArtifactReadDiagnostics.create(code, message, **associations)
+        raise ArtifactReadError((diagnostic,), CompilationStatus.INCOMPLETE if associations.get('incomplete') else CompilationStatus.FAILED)
+
+
+def _read_sequence(values: object, expected: type) -> tuple:
+    if type(values) not in (tuple, list) or any(type(v) is not expected for v in values):
+        ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_REQUEST, 'An explicit finite typed inventory is required.')
+    return tuple(values)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadSelection:
+    mode: ArtifactReadSelectionMode
+    keys: tuple[CompilationArtifactKey, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.mode) is not ArtifactReadSelectionMode:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_SELECTION, 'Selection requires an explicit supported mode.')
+        keys = _read_sequence(self.keys, CompilationArtifactKey)
+        if len(set(keys)) != len(keys) or self.mode is ArtifactReadSelectionMode.ALL_DECLARED_ARTIFACTS and keys or self.mode is ArtifactReadSelectionMode.ONE_ARTIFACT and len(keys) != 1 or self.mode is ArtifactReadSelectionMode.EXPLICIT_ARTIFACT_SET and not keys:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_SELECTION, 'ALL has no key overrides; ONE has one key; explicit SET is nonempty without duplicates.')
+        object.__setattr__(self, 'keys', tuple(sorted(keys)))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadPolicy:
+    maximum_artifact_bytes: int = 32 * 1024 * 1024
+    maximum_aggregate_bytes: int = 128 * 1024 * 1024
+    maximum_artifact_count: int = 128
+    required_integrity: ArtifactReadIntegrity = ArtifactReadIntegrity.SIZE_VERIFIED
+
+    def __post_init__(self) -> None:
+        if any(type(v) is not int or v <= 0 for v in (self.maximum_artifact_bytes, self.maximum_aggregate_bytes, self.maximum_artifact_count)) or type(self.required_integrity) is not ArtifactReadIntegrity:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_POLICY, 'Read limits require positive actual integers and an explicit supported integrity requirement.')
+
+    def bounded_by(self, server: 'ArtifactReadPolicy') -> 'ArtifactReadPolicy':
+        if type(server) is not ArtifactReadPolicy:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_POLICY, 'Read ceilings require trusted typed server configuration.')
+        integrity = ArtifactReadIntegrity.DIGEST_VERIFIED if ArtifactReadIntegrity.DIGEST_VERIFIED in (self.required_integrity, server.required_integrity) else ArtifactReadIntegrity.SIZE_VERIFIED
+        return ArtifactReadPolicy(min(self.maximum_artifact_bytes, server.maximum_artifact_bytes), min(self.maximum_aggregate_bytes, server.maximum_aggregate_bytes), min(self.maximum_artifact_count, server.maximum_artifact_count), integrity)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadRequest:
+    manifest: RuntimeArtifactManifest
+    receipt: ArtifactMaterializationReceipt
+    selection: ArtifactReadSelection
+    source: ArtifactReadSource
+    policy: ArtifactReadPolicy = field(default_factory=ArtifactReadPolicy)
+
+    def __post_init__(self) -> None:
+        for value, expected, code in (
+            (self.manifest, RuntimeArtifactManifest, CompilationFailure.READ_MANIFEST_MISMATCH),
+            (self.receipt, ArtifactMaterializationReceipt, CompilationFailure.READ_RECEIPT_MISMATCH),
+            (self.selection, ArtifactReadSelection, CompilationFailure.READ_INVALID_SELECTION),
+            (self.source, ArtifactReadSource, CompilationFailure.READ_UNSUPPORTED_SOURCE),
+            (self.policy, ArtifactReadPolicy, CompilationFailure.READ_INVALID_POLICY)):
+            if type(value) is not expected:
+                ArtifactReadDiagnostics.reject(code, 'Read request requires actual manifest, committed receipt, explicit selection, logical source and bounded policy.')
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadPlan:
+    request: ArtifactReadRequest
+    effective_policy: ArtifactReadPolicy
+    entries: tuple[MaterializedArtifact, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not ArtifactReadRequest or type(self.effective_policy) is not ArtifactReadPolicy:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_REQUEST, 'Read plan requires actual request and effective bounded policy.')
+        entries = _read_sequence(self.entries, MaterializedArtifact)
+        selected = self.request.selection
+        expected = tuple(e for e in self.request.receipt.artifacts if selected.mode is ArtifactReadSelectionMode.ALL_DECLARED_ARTIFACTS or e.descriptor.key in selected.keys)
+        if not entries or entries != expected:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INCOMPLETE_SET, 'Read plan must retain every selected receipt entry in manifest order.')
+        object.__setattr__(self, 'entries', entries)
+
+    @property
+    def selected_keys(self) -> tuple[CompilationArtifactKey, ...]:
+        return tuple(e.descriptor.key for e in self.entries)
+
+    @property
+    def complete_set(self) -> bool:
+        return self.request.selection.mode is ArtifactReadSelectionMode.ALL_DECLARED_ARTIFACTS
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadPlanner:
+    server_policy: ArtifactReadPolicy = field(default_factory=ArtifactReadPolicy)
+
+    def __post_init__(self) -> None:
+        if type(self.server_policy) is not ArtifactReadPolicy:
+            ArtifactReadDiagnostics.reject(CompilationFailure.READ_INVALID_POLICY, 'Planner requires trusted bounded server policy.')
+
+    def plan(self, request: ArtifactReadRequest) -> ArtifactReadPlan:
+        reject = ArtifactReadDiagnostics.reject
+        if type(request) is not ArtifactReadRequest:
+            reject(CompilationFailure.READ_INVALID_REQUEST, 'Reader requires an actual immutable request.')
+        manifest, receipt = request.manifest, request.receipt
+        association = manifest.compilation_association
+        try:
+            RuntimeArtifactManifest(manifest.identity, manifest.schema_version, manifest.semantic_context, manifest.target, association, manifest.artifacts)
+        except RuntimeArtifactManifestError as error:
+            diagnostic = ArtifactReadDiagnostics.create(CompilationFailure.READ_MANIFEST_MISMATCH, 'Declared manifest structure is not valid for retrieval.', manifest=manifest)
+            raise ArtifactReadError((*error.diagnostics, diagnostic)) from error
+        original = association.request
+        evidence = original.validation_evidence
+        if association.output_origin.request is not original or association.output_origin.compiler is not association.compiler or evidence is None or evidence.status is not ModelValidationStatus.VALID or evidence.readiness is not CompilationReadiness.READY or evidence.validated_model is not original.canonical_model or original.canonical_model.scope != manifest.semantic_context or original.context.scope != manifest.semantic_context or original.context.target != manifest.target:
+            reject(CompilationFailure.READ_MANIFEST_MISMATCH, 'Manifest must retain original accepted canonical/evidence/scope/target/output binding.', manifest=manifest)
+        if any(o.status is not CompilationPhaseStatus.COMPLETED or o.executed is not True for o in association.phase_outcomes) or not any(CompilationCapability.EMIT_ARTIFACTS in o.descriptor.capabilities for o in association.phase_outcomes):
+            reject(CompilationFailure.READ_MANIFEST_MISMATCH, 'Manifest must retain complete original final artifact phase evidence.', manifest=manifest)
+        if receipt.manifest.identity != manifest.identity or receipt.compilation_association is not association or (receipt.manifest.schema_version, receipt.manifest.semantic_context, receipt.manifest.target, receipt.manifest.artifacts) != (manifest.schema_version, manifest.semantic_context, manifest.target, manifest.artifacts) or receipt.destination != request.source:
+            reject(CompilationFailure.READ_RECEIPT_MISMATCH, 'Receipt must retain exact manifest declaration, original association and selected committed destination.', manifest=manifest)
+        if type(receipt.artifacts) is not tuple or any(type(e) is not MaterializedArtifact or type(e.descriptor) is not RuntimeArtifactDescriptor or type(e.location) is not ArtifactRelativeLocation for e in receipt.artifacts):
+            reject(CompilationFailure.READ_RECEIPT_MISMATCH, 'Receipt entries must preserve actual immutable typed descriptor and locator contracts.', manifest=manifest)
+        if tuple(e.descriptor for e in receipt.artifacts) != manifest.artifacts or len({e.location for e in receipt.artifacts}) != len(receipt.artifacts):
+            reject(CompilationFailure.READ_RECEIPT_MISMATCH, 'Receipt requires complete ordered descriptor membership and unique locations.', manifest=manifest)
+        for entry in receipt.artifacts:
+            try:
+                ArtifactRelativeLocation(entry.location.value)
+            except ArtifactWriteError as error:
+                reject(CompilationFailure.READ_UNSAFE_PATH, 'Receipt location does not satisfy the existing safe committed filename contract.', manifest=manifest)
+            if type(entry.byte_length) is not int or entry.byte_length < 0:
+                reject(CompilationFailure.READ_RECEIPT_MISMATCH, 'Receipt must contain an actual nonnegative expected byte length.', manifest=manifest, entry=entry)
+            if entry.verified_digest is not None:
+                if type(entry.verified_digest) is not ArtifactContentDigest:
+                    reject(CompilationFailure.READ_UNSUPPORTED_DIGEST, 'Digest evidence must use the approved explicit digest contract.', manifest=manifest, entry=entry, incomplete=True)
+                try:
+                    ArtifactContentDigest(entry.verified_digest.algorithm, entry.verified_digest.value)
+                except ArtifactWriteError as error:
+                    reject(CompilationFailure.READ_UNSUPPORTED_DIGEST, 'Receipt digest is malformed or unsupported; no inferred algorithm.', manifest=manifest, entry=entry, incomplete=True)
+        selection = request.selection
+        membership = {d.key for d in manifest.artifacts}
+        for key in selection.keys:
+            if key not in membership:
+                reject(CompilationFailure.READ_UNKNOWN_ARTIFACT, 'Selected artifact identity is absent from the declared manifest.', manifest=manifest, key=key)
+        entries = tuple(e for e in receipt.artifacts if selection.mode is ArtifactReadSelectionMode.ALL_DECLARED_ARTIFACTS or e.descriptor.key in selection.keys)
+        policy = request.policy.bounded_by(self.server_policy)
+        if len(entries) > policy.maximum_artifact_count:
+            reject(CompilationFailure.READ_SIZE_LIMIT_EXCEEDED, 'Selected artifact count exceeds effective server-bounded limits.', manifest=manifest)
+        total = 0
+        for entry in entries:
+            total += entry.byte_length
+            if entry.byte_length > policy.maximum_artifact_bytes or total > policy.maximum_aggregate_bytes:
+                reject(CompilationFailure.READ_SIZE_LIMIT_EXCEEDED, 'Declared selected bytes exceed effective server-bounded limits.', manifest=manifest, entry=entry)
+            if policy.required_integrity is ArtifactReadIntegrity.DIGEST_VERIFIED and entry.verified_digest is None:
+                reject(CompilationFailure.READ_REQUIRED_DIGEST_MISSING, 'Mandatory byte-digest evidence is unavailable; no silent downgrade.', manifest=manifest, entry=entry, incomplete=True)
+        return ArtifactReadPlan(request, policy, entries)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadVerification:
+    expected_byte_length: int
+    actual_byte_length: int
+    verified_digest: ArtifactContentDigest | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.expected_byte_length) is not int or type(self.actual_byte_length) is not int or self.expected_byte_length < 0 or self.actual_byte_length != self.expected_byte_length or self.verified_digest is not None and type(self.verified_digest) is not ArtifactContentDigest:
+            raise ValueError('Verification records actual equal byte lengths and optional approved verified digest.')
+
+    @property
+    def integrity(self) -> ArtifactReadIntegrity:
+        return ArtifactReadIntegrity.SIZE_VERIFIED if self.verified_digest is None else ArtifactReadIntegrity.DIGEST_VERIFIED
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievedArtifact:
+    descriptor: RuntimeArtifactDescriptor
+    location: ArtifactRelativeLocation
+    content: bytes = field(repr=False)
+    verification: ArtifactReadVerification
+
+    def __post_init__(self) -> None:
+        if type(self.descriptor) is not RuntimeArtifactDescriptor or type(self.location) is not ArtifactRelativeLocation or type(self.content) is not bytes or type(self.verification) is not ArtifactReadVerification:
+            raise TypeError('Retrieved artifact is immutable descriptor/location/exact bytes/read evidence, not compiler output.')
+        if len(self.content) != self.verification.actual_byte_length:
+            raise ValueError('Retrieved content length must match actual recorded verification.')
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadResult:
+    status: CompilationStatus
+    plan: ArtifactReadPlan | None = None
+    artifacts: tuple[RetrievedArtifact, ...] = ()
+    diagnostics: tuple[CompilationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not CompilationStatus or self.plan is not None and type(self.plan) is not ArtifactReadPlan:
+            raise TypeError('Read result requires established status and optional actual selected plan.')
+        artifacts = _read_sequence(self.artifacts, RetrievedArtifact)
+        diagnostics = _read_sequence(self.diagnostics, CompilationDiagnostic)
+        if self.status is CompilationStatus.SUCCEEDED:
+            if self.plan is None or len(artifacts) != len(self.plan.entries) or any(d.severity is TypeValidationSeverity.ERROR for d in diagnostics):
+                raise ValueError('Read success requires all selected artifacts and no errors.')
+            if len(artifacts) > self.plan.effective_policy.maximum_artifact_count or self.plan.effective_policy.required_integrity is ArtifactReadIntegrity.DIGEST_VERIFIED and any(a.verification.verified_digest is None for a in artifacts):
+                raise ValueError('Successful read must respect effective count and mandatory digest requirements.')
+            for artifact, entry in zip(artifacts, self.plan.entries):
+                if (artifact.descriptor, artifact.location, artifact.verification.expected_byte_length, artifact.verification.verified_digest) != (entry.descriptor, entry.location, entry.byte_length, entry.verified_digest):
+                    raise ValueError('Successful read must preserve selected committed identity/location/length/digest facts.')
+            if sum(len(a.content) for a in artifacts) > self.plan.effective_policy.maximum_aggregate_bytes or any(len(a.content) > self.plan.effective_policy.maximum_artifact_bytes for a in artifacts):
+                raise ValueError('Successful retrieved bytes must respect effective limits.')
+        elif artifacts or not diagnostics:
+            raise ValueError('Non-success has diagnostics and exposes no partial retrieved payloads.')
+        object.__setattr__(self, 'artifacts', artifacts)
+        object.__setattr__(self, 'diagnostics', diagnostics)
+
+
+class ArtifactReader(Protocol):
+    def read(self, request: ArtifactReadRequest) -> ArtifactReadResult:
+        ...
+
+
+_LEGACY_DIAGNOSTIC_OWNERS = MappingProxyType({**_LEGACY_DIAGNOSTIC_OWNERS,
+    **{code: CompilationDiagnosticOrigin.RESULT for code in CompilationFailure if code.name.startswith('READ_')}})
+
+__all__ += ['ArtifactReadStage', 'ArtifactReadSourceType', 'ArtifactReadSource',
+            'ArtifactReadSelectionMode', 'ArtifactReadIntegrity', 'ArtifactReadError',
+            'ArtifactReadDiagnostics', 'ArtifactReadSelection', 'ArtifactReadPolicy',
+            'ArtifactReadRequest', 'ArtifactReadPlan', 'ArtifactReadPlanner',
+            'ArtifactReadVerification', 'RetrievedArtifact', 'ArtifactReadResult', 'ArtifactReader']
