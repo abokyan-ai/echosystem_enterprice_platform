@@ -199,3 +199,7 @@ RuntimeValidator and RUN-03 integration remain inside existing `apps/semantic-in
 ## RUN-05 execution ownership
 
 ExecutionContext/Factory and operational identity/evidence/derivation contracts reside in existing runtime-core.public, reusing only Kernel/compiled-contracts and actual RUN-02 scope/snapshot/definition within same module. No model/compiler/application/framework edge or RUN-03/04 reverse dependency. Pure owner-verification port reflects genuine established evidence; no policy/identity provider/executor approval implied. No graph/policy exception, activation change or global context. See [ADR-0046](decisions/ADR-0046-execution-context.md).
+
+## RUN-06 error ownership
+
+Common observational runtime failure composition resides in existing apps/semantic-instance-runtime public API with its four allowed Kernel/model/compiled/runtime public edges. Earlier runtime/core/services do not import these application adapters. FieldId/canonical identity owned here rather than relaxing runtime-core imports. Neutral RUN-01 reader diagnostics retain CMP causes without a compiler edge. General SK-11 absent; no new generic Diagnostic or plugin hierarchy. Existing result semantics/policy/dependencies/activation unchanged. See [ADR-0047](decisions/ADR-0047-runtime-error-model.md).

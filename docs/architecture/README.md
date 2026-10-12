@@ -58,3 +58,7 @@ New `apps/semantic-instance-runtime` composes public Kernel/model-core/compiled-
 ### RUN-05 execution context
 
 [Execution context](../runtime/execution-context.md) adds immutable invocation/evidence/scope/selection/trace/bounds and explicit conditional create/derive in existing runtime-core. Specialized earlier contexts remain independent; no new dependencies or reverse imports. Exact scoped snapshot selection, original owner evidence verification and strict child narrowing, no delegation/activation/executor/policy infrastructure. Actual principal/decision/trust integration unavailable. [ADR-0046](decisions/ADR-0046-execution-context.md), [187 deferred cases](../../test-archive/RUN-05/RUN-05-deferred-tests.md), [completion/static record](run05-verification.md). Tests0, **NOT_RUN — DEFERRED / NOT VERIFIED**; no RUN-06.
+
+### RUN-06 runtime error composition
+
+[Runtime error model](../runtime/runtime-error-model.md) lives in existing semantic-instance application composition using its current governed edges, retaining owned FieldId/InstanceId associations without a forbidden lower-core model import. Observational adapters preserve original outcomes and diagnostics, explicit bounded causes and safe default public projection. No service replay/HTTP framework/diagnostic hierarchy or reverse dependency. [ADR-0047](decisions/ADR-0047-runtime-error-model.md), [204 deferred cases](../../test-archive/RUN-06/RUN-06-deferred-tests.md), [completion/static record](run06-verification.md). Tests0; **NOT_RUN — DEFERRED / NOT VERIFIED**; stop RUN-06.

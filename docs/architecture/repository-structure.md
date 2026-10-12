@@ -120,3 +120,7 @@ Existing `apps/semantic-instance-runtime/src/semantic_instance_runtime/public.py
 ## RUN-05 additions
 
 Only production `platform/runtime/runtime-core/src/runtime_core/public.py` modified for immutable execution context, narrow identities/evidence/bounds, factory/create/derive and diagnostics. Existing12 modules/51 production sources unchanged. Added `docs/runtime/execution-context.md`, `docs/architecture/decisions/ADR-0046-execution-context.md`, `docs/architecture/run05-verification.md` and exactly `test-archive/RUN-05/RUN-05-deferred-tests.md` (187 cases). No test scaffold, new API or framework startup.
+
+## RUN-06 additions
+
+Only production apps/semantic-instance-runtime/src/semantic_instance_runtime/public.py modified for immutable failure/category/code/context/target/cause/collection, factory/result adapters and safe public projection.12 modules/51 sources unchanged. Added docs/runtime/runtime-error-model.md, docs/architecture/decisions/ADR-0047-runtime-error-model.md, docs/architecture/run06-verification.md and exactly test-archive/RUN-06/RUN-06-deferred-tests.md (204 cases). No tests/framework/API/source operation replay.

@@ -13,6 +13,9 @@ from decimal import Decimal
 from enum import Enum
 from typing import Protocol
 from uuid import UUID
+from types import MappingProxyType
+import re
+from concurrent.futures import CancelledError as FutureCancelledError
 
 from semantic_kernel.public import (SemanticContextRef, SemanticElementId,
     SemanticVersion, ElementVersionRef, ElementRef, PrimitiveTypes)
@@ -21,8 +24,13 @@ from model_core.public import (FieldId, FieldName, FieldDefinition, FieldConstra
     ConstraintKind, ConstraintKinds, MinimumConstraint, MaximumConstraint,
     MinLengthConstraint, MaxLengthConstraint, PatternConstraint, PrecisionConstraint,
     ScaleConstraint, NumericConstraintValue, primitive_constraint_kinds)
-from compiled_contracts.public import RuntimeCapabilityId
+from compiled_contracts.public import RuntimeCapabilityId, RuntimeTargetId, CompilationArtifactKey, CompilationArtifactKind
 from runtime_core.public import (RuntimeArtifactLoadStatus, RuntimeLoadSeverity,
+    RuntimeArtifactLoadFailure, RuntimeArtifactReaderDiagnostic, RuntimeArtifactLoadResult, RuntimeModelRegistryOperation,
+    RuntimeModelRegistrationResult, RuntimeModelMembershipResult,
+    RuntimeModelVersionInspectionResult, RuntimeModelRegistrySnapshotResult,
+    ExecutionContext, ExecutionContextCreationResult, ExecutionContextDiagnostic,
+    ExecutionContextFailure, RuntimeInvocationId, ExecutionCorrelationId, ExecutionCausationRef,
     RuntimeArtifactLoadDiagnostic, RuntimeArtifactLoadError,
     RuntimeArtifactDecoderRegistration, RuntimeModelRegistry, RuntimeModelRegistryScope,
     RuntimeModelDefinition, RuntimeModelDefinitionKind, RuntimeModelRegistrySnapshot,
@@ -1329,3 +1337,564 @@ class DefaultSemanticInstanceRuntime:
 
 
 __all__ = [name for name in globals() if name.startswith(('RuntimeInstance', 'RuntimeSemanticInstance', 'SemanticInstance', 'RuntimeValidation'))] + ['MODULE_NAME', 'SemanticFieldValue', 'RuntimePrimitiveValue', 'DefaultSemanticInstanceRuntime', 'RuntimeValidator', 'DefaultRuntimeValidator']
+
+
+# RUN-06: observational application composition, no upward runtime-core imports.
+class RuntimeErrorCategory(Enum):
+    INVALID_REQUEST = 'invalid-request'
+    INVALID_STATE = 'invalid-state'
+    NOT_FOUND = 'not-found'
+    CONFLICT = 'conflict'
+    VALIDATION = 'validation'
+    AUTHORIZATION = 'authorization'
+    INTEGRITY = 'integrity'
+    COMPATIBILITY = 'compatibility'
+    UNSUPPORTED_CAPABILITY = 'unsupported-capability'
+    RESOURCE_LIMIT = 'resource-limit'
+    INFRASTRUCTURE = 'infrastructure'
+    INTERNAL = 'internal'
+    UNKNOWN = 'unknown'
+
+
+class RuntimeErrorOperation(Enum):
+    ARTIFACT_LOAD = 'artifact-load'
+    ARTIFACT_READ = 'artifact-read'
+    MODEL_REGISTER = 'model-register'
+    MODEL_LOOKUP = 'model-lookup'
+    MODEL_INSPECT_NAME = 'model-inspect-name'
+    MODEL_ENUMERATE_VERSIONS = 'model-enumerate-versions'
+    MODEL_MEMBERSHIP = 'model-membership'
+    MODEL_SNAPSHOT = 'model-snapshot'
+    INSTANCE_CREATE = 'instance-create'
+    INSTANCE_UPDATE = 'instance-update'
+    INSTANCE_INSPECT = 'instance-inspect'
+    INSTANCE_VALIDATE = 'instance-validate'
+    CONTEXT_CREATE = 'context-create'
+    CONTEXT_DERIVE = 'context-derive'
+
+
+# Closed original code mapping; category is never inferred from message text.
+# Reader CMP-061..080 is the actual existing neutral RUN-01 reader projection,
+# not a new compiler import/dependency or renamed compiler diagnostic.
+_RUNTIME_ERROR_CATEGORY_GROUPS = (
+    (RuntimeErrorCategory.INVALID_REQUEST, '001 101 102 108 109 110 116 201 204 206 209 301 305 307 308 401 402 403 404 405 406 407 409 412 413 414'),
+    (RuntimeErrorCategory.AUTHORIZATION, '002 003 103 104 202 203 408 410 411 416 417 418 422'),
+    (RuntimeErrorCategory.INTEGRITY, '004 005 007 020 105 106 113 121 207 208 219 303 304 423'),
+    (RuntimeErrorCategory.COMPATIBILITY, '008 009 010 013 014 021'),
+    (RuntimeErrorCategory.UNSUPPORTED_CAPABILITY, '011 015 016 019 107 117 119 120 216 217 220 222 302 306 319 321 415 419 424'),
+    (RuntimeErrorCategory.RESOURCE_LIMIT, '018 118 221 320 420 421'),
+    (RuntimeErrorCategory.CONFLICT, '017 111 112 115 211 218'),
+    (RuntimeErrorCategory.NOT_FOUND, '114 205'),
+    (RuntimeErrorCategory.VALIDATION, '012 210 212 213 214 215 309 310 311 312 313 314 315 316 317 318'),
+)
+_RUNTIME_ERROR_CATEGORIES = {'RUN-' + number: category for category, values in _RUNTIME_ERROR_CATEGORY_GROUPS for number in values.split()}
+_RUNTIME_ERROR_CATEGORIES.update({'RUN-006': RuntimeErrorCategory.UNKNOWN,
+    'RUN-207': RuntimeErrorCategory.INVALID_STATE, 'RUN-208': RuntimeErrorCategory.INVALID_STATE,
+    'RUN-423': RuntimeErrorCategory.INVALID_STATE, 'RUN-409': RuntimeErrorCategory.AUTHORIZATION,
+    'RUN-501': RuntimeErrorCategory.INTERNAL, 'RUN-502': RuntimeErrorCategory.INFRASTRUCTURE,
+    'RUN-503': RuntimeErrorCategory.UNKNOWN, 'RUN-505': RuntimeErrorCategory.UNKNOWN})
+_RUNTIME_ERROR_CATEGORIES.update({'CMP-' + str(n): category for category, numbers in (
+    (RuntimeErrorCategory.INVALID_REQUEST, (61, 64, 65, 66, 68, 80)),
+    (RuntimeErrorCategory.COMPATIBILITY, (62, 67, 69, 79)),
+    (RuntimeErrorCategory.INTEGRITY, (63, 73, 74, 75, 77, 78)),
+    (RuntimeErrorCategory.RESOURCE_LIMIT, (72,)),
+    (RuntimeErrorCategory.INFRASTRUCTURE, (70, 71, 76))) for n in numbers})
+# CMP code values contain exactly three digits.
+_RUNTIME_ERROR_CATEGORIES.update({f'CMP-{n:03d}': _RUNTIME_ERROR_CATEGORIES.pop('CMP-' + str(n)) for n in range(61, 81)})
+_RUNTIME_ERROR_MESSAGES = {
+    RuntimeErrorCategory.INVALID_REQUEST: 'The runtime request is invalid.',
+    RuntimeErrorCategory.INVALID_STATE: 'The runtime state does not permit this operation.',
+    RuntimeErrorCategory.NOT_FOUND: 'The exact requested runtime resource was not found.',
+    RuntimeErrorCategory.CONFLICT: 'The runtime operation conflicts with existing state.',
+    RuntimeErrorCategory.VALIDATION: 'Runtime validation reported a definite violation.',
+    RuntimeErrorCategory.AUTHORIZATION: 'The required runtime authority could not be established.',
+    RuntimeErrorCategory.INTEGRITY: 'Runtime integrity evidence does not match the required association.',
+    RuntimeErrorCategory.COMPATIBILITY: 'The runtime representation is incompatible with the requested operation.',
+    RuntimeErrorCategory.UNSUPPORTED_CAPABILITY: 'A required runtime prerequisite or capability is unavailable.',
+    RuntimeErrorCategory.RESOURCE_LIMIT: 'The runtime operation exceeds its supported resource limits.',
+    RuntimeErrorCategory.INFRASTRUCTURE: 'The runtime operation encountered an infrastructure failure.',
+    RuntimeErrorCategory.INTERNAL: 'The runtime operation encountered an internal failure.',
+    RuntimeErrorCategory.UNKNOWN: 'The runtime failure has no usable cause detail.',
+}
+
+
+_RUNTIME_ERROR_CATEGORIES = MappingProxyType(_RUNTIME_ERROR_CATEGORIES)
+_RUNTIME_ERROR_MESSAGES = MappingProxyType(_RUNTIME_ERROR_MESSAGES)
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorCode:
+    value: str
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not str or self.value not in _RUNTIME_ERROR_CATEGORIES:
+            raise ValueError('Error code must be a known original runtime/reader code or explicit safe boundary fallback.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorContext:
+    semantic_context: SemanticContextRef | None = None
+    runtime_target: RuntimeTargetId | None = None
+    registry_scope: RuntimeModelRegistryScope | None = None
+    invocation_identity: RuntimeInvocationId | None = None
+    correlation_identity: ExecutionCorrelationId | None = None
+    causation: ExecutionCausationRef | None = None
+
+    def __post_init__(self) -> None:
+        for value, expected in ((self.semantic_context, SemanticContextRef), (self.runtime_target, RuntimeTargetId), (self.registry_scope, RuntimeModelRegistryScope), (self.invocation_identity, RuntimeInvocationId), (self.correlation_identity, ExecutionCorrelationId), (self.causation, ExecutionCausationRef)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Error context includes only actual available immutable coordinates, never a full request or credential.')
+        if self.registry_scope is not None and (self.semantic_context not in (None, self.registry_scope.semantic_context) or self.runtime_target not in (None, self.registry_scope.runtime_target)):
+            raise ValueError('Error semantic/target coordinates cannot contradict registry scope.')
+
+    @classmethod
+    def from_execution(cls, context: ExecutionContext) -> 'RuntimeErrorContext':
+        if type(context) is not ExecutionContext:
+            raise TypeError('Only an explicit actual existing execution context may supply error coordinates.')
+        return cls(context.semantic_context, context.registry_scope.runtime_target, context.registry_scope,
+            context.invocation_identity, context.correlation_identity, context.causation)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorTarget:
+    artifact_key: CompilationArtifactKey | None = None
+    artifact_kind: CompilationArtifactKind | None = None
+    manifest_identity: str | None = None
+    definitions: tuple[ElementVersionRef, ...] = ()
+    instance_identity: RuntimeInstanceIdentityAssociation | None = field(default=None, repr=False)
+    field_id: FieldId | None = None
+    constraint_kind: ConstraintKind | None = None
+    revision: RuntimeInstanceRevision | None = None
+
+    def __post_init__(self) -> None:
+        for value, expected in ((self.artifact_key, CompilationArtifactKey), (self.artifact_kind, CompilationArtifactKind), (self.instance_identity, RuntimeInstanceIdentityAssociation), (self.field_id, FieldId), (self.constraint_kind, ConstraintKind), (self.revision, RuntimeInstanceRevision)):
+            if value is not None and type(value) is not expected:
+                raise TypeError('Runtime targets preserve actual stable field/instance/artifact/version coordinates.')
+        if not _typed_tuple(self.definitions, ElementVersionRef) or len(self.definitions) > 128 or any(type(r.element_id) is not SemanticElementId or type(r.version) is not SemanticVersion for r in self.definitions):
+            raise TypeError('Definition associations must be a bounded immutable exact-reference tuple.')
+        if self.manifest_identity is not None and (type(self.manifest_identity) is not str or len(self.manifest_identity) > 160 or re.fullmatch(r'manifest-[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', self.manifest_identity) is None):
+            raise TypeError('Manifest identity is a bounded original operational token, never an inferred semantic ID.')
+
+
+_ERROR_DIAGNOSTIC_TYPES = (RuntimeArtifactLoadDiagnostic, RuntimeArtifactReaderDiagnostic,
+    RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic, ExecutionContextDiagnostic)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorDiagnosticAssociation:
+    """Actual existing typed diagnostic reference, not another Diagnostic model."""
+    source: RuntimeArtifactLoadDiagnostic | RuntimeArtifactReaderDiagnostic | RuntimeInstanceDiagnostic | RuntimeValidationDiagnostic | ExecutionContextDiagnostic = field(repr=False)
+    source_index: int
+
+    def __post_init__(self) -> None:
+        if type(self.source) not in _ERROR_DIAGNOSTIC_TYPES or type(self.source_index) is not int or self.source_index < 0:
+            raise TypeError('Association retains original immutable diagnostic occurrence and explicit source ordering.')
+
+    @property
+    def code(self) -> str:
+        return self.source.code if type(self.source) is RuntimeArtifactReaderDiagnostic else self.source.code.value
+
+
+class RuntimeErrorCauseKind(Enum):
+    DIRECT_UNDERLYING = 'direct-underlying'
+    RELATED_DIAGNOSTIC = 'related-diagnostic'
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorCause:
+    """Flat immutable snapshot. No exception, parent error pointer or recursive cause field."""
+    kind: RuntimeErrorCauseKind
+    code: RuntimeErrorCode | None
+    category: RuntimeErrorCategory
+    operation: RuntimeErrorOperation
+    context: RuntimeErrorContext
+    target: RuntimeErrorTarget
+    diagnostic: RuntimeErrorDiagnosticAssociation | None = field(default=None, repr=False)
+    depth: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not RuntimeErrorCauseKind or self.code is not None and type(self.code) is not RuntimeErrorCode or type(self.category) is not RuntimeErrorCategory or type(self.operation) is not RuntimeErrorOperation or type(self.context) is not RuntimeErrorContext or type(self.target) is not RuntimeErrorTarget or self.diagnostic is not None and type(self.diagnostic) is not RuntimeErrorDiagnosticAssociation or type(self.depth) is not int or not 1 <= self.depth <= 32:
+            raise TypeError('Cause is a bounded typed actual failure snapshot; correlation alone is not cause evidence.')
+        if self.code is None and self.diagnostic is None:
+            raise ValueError('Unknown code cause must retain the actual original diagnostic, never invented evidence.')
+        if self.code is not None and self.category is not _runtime_error_category(self.code, (self.diagnostic,) if self.diagnostic is not None else ()):
+            raise ValueError('Cause code/category must retain actual known lower diagnostic classification.')
+
+
+def _runtime_error_category(code: RuntimeErrorCode, diagnostics: tuple[RuntimeErrorDiagnosticAssociation, ...]) -> RuntimeErrorCategory:
+    if code.value == 'RUN-006':
+        readers = []
+        overflow = False
+        for ref in diagnostics[:1024]:
+            if type(ref.source) is RuntimeArtifactLoadDiagnostic:
+                inventory = ref.source.reader_diagnostics
+                remaining = 1024 - len(readers)
+                readers.extend(inventory[:remaining])
+                overflow = overflow or len(inventory) > remaining
+            elif type(ref.source) is RuntimeArtifactReaderDiagnostic and len(readers) < 1024:
+                readers.append(ref.source)
+        categories = {_RUNTIME_ERROR_CATEGORIES.get(d.code, RuntimeErrorCategory.UNKNOWN)
+            for d in readers if d.severity is RuntimeLoadSeverity.ERROR}
+        if RuntimeErrorCategory.INTEGRITY in categories:
+            return RuntimeErrorCategory.INTEGRITY
+        if overflow:
+            return RuntimeErrorCategory.UNKNOWN
+        for category in (RuntimeErrorCategory.RESOURCE_LIMIT, RuntimeErrorCategory.COMPATIBILITY,
+                         RuntimeErrorCategory.INFRASTRUCTURE, RuntimeErrorCategory.INVALID_REQUEST):
+            if category in categories:
+                return category
+        return RuntimeErrorCategory.UNKNOWN
+    return _RUNTIME_ERROR_CATEGORIES[code.value]
+
+
+def _runtime_safe_error_message(code: RuntimeErrorCode, category: RuntimeErrorCategory) -> str:
+    return 'The request could not be completed.' if code.value == 'RUN-505' else _RUNTIME_ERROR_MESSAGES[category]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorDetail:
+    code: RuntimeErrorCode
+    category: RuntimeErrorCategory
+    severity: RuntimeLoadSeverity
+    operation: RuntimeErrorOperation
+    context: RuntimeErrorContext
+    target: RuntimeErrorTarget
+    safe_message: str
+    diagnostics: tuple[RuntimeErrorDiagnosticAssociation, ...] = field(default=(), repr=False)
+    causes: tuple[RuntimeErrorCause, ...] = field(default=(), repr=False)
+    omitted_diagnostics: int = 0
+    omitted_causes: int = 0
+    omitted_targets: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not RuntimeErrorCode or type(self.category) is not RuntimeErrorCategory or type(self.severity) is not RuntimeLoadSeverity or type(self.operation) is not RuntimeErrorOperation or type(self.context) is not RuntimeErrorContext or type(self.target) is not RuntimeErrorTarget:
+            raise TypeError('Runtime error is an immutable value, not a Python exception or operation result.')
+        if not _typed_tuple(self.diagnostics, RuntimeErrorDiagnosticAssociation) or len(self.diagnostics) > 1024 or not _typed_tuple(self.causes, RuntimeErrorCause) or len(self.causes) > 128:
+            raise TypeError('Error details have hard bounded immutable diagnostic/cause membership.')
+        if self.category is not _runtime_error_category(self.code, self.diagnostics) or type(self.safe_message) is not str or self.safe_message != _runtime_safe_error_message(self.code, self.category):
+            raise ValueError('Code/category/message must use the actual controlled mapping, never raw exception text.')
+        if any(type(v) is not int or v < 0 for v in (self.omitted_diagnostics, self.omitted_causes, self.omitted_targets)):
+            raise ValueError('Every dropped detail has explicit nonnegative omission evidence.')
+
+    @property
+    def detail_complete(self) -> bool:
+        return self.category is not RuntimeErrorCategory.UNKNOWN and self.omitted_diagnostics == self.omitted_causes == self.omitted_targets == 0 and all(c.code is not None and c.category is not RuntimeErrorCategory.UNKNOWN for c in self.causes)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorCollection:
+    errors: tuple[RuntimeErrorDetail, ...] = ()
+    omitted_errors: int = 0
+
+    def __post_init__(self) -> None:
+        if not _typed_tuple(self.errors, RuntimeErrorDetail) or len(self.errors) > 1024 or type(self.omitted_errors) is not int or self.omitted_errors < 0:
+            raise TypeError('Collection preserves ordered occurrences/duplicates and explicit capacity omissions.')
+
+    @property
+    def detail_complete(self) -> bool:
+        return self.omitted_errors == 0 and all(e.detail_complete for e in self.errors)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorResultAssociation:
+    operation: RuntimeErrorOperation
+    source_status: RuntimeArtifactLoadStatus | RuntimeModelLookupStatus | RuntimeInstanceInspectionStatus | RuntimeValidationStatus
+    errors: RuntimeErrorCollection
+    diagnostics: tuple[RuntimeErrorDiagnosticAssociation, ...] = field(default=(), repr=False)
+    omitted_diagnostics: int = 0
+    validation_complete: bool | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.operation) is not RuntimeErrorOperation or type(self.source_status) not in (RuntimeArtifactLoadStatus, RuntimeModelLookupStatus, RuntimeInstanceInspectionStatus, RuntimeValidationStatus) or type(self.errors) is not RuntimeErrorCollection or not _typed_tuple(self.diagnostics, RuntimeErrorDiagnosticAssociation) or len(self.diagnostics) > 1024:
+            raise TypeError('Association retains authoritative original status, without a replacement generic result.')
+        if type(self.omitted_diagnostics) is not int or self.omitted_diagnostics < 0 or self.validation_complete is not None and type(self.validation_complete) is not bool:
+            raise TypeError('Detail omissions and validation completeness remain separate from status.')
+        if self.operation is RuntimeErrorOperation.INSTANCE_VALIDATE:
+            if type(self.source_status) is not RuntimeValidationStatus or self.validation_complete is None:
+                raise ValueError('Validation interoperability preserves VALID/INVALID/INCOMPLETE and completeness.')
+        elif self.validation_complete is not None:
+            raise ValueError('Only actual validation result supplies validation completeness.')
+        expected_status = RuntimeModelLookupStatus if self.operation in (RuntimeErrorOperation.MODEL_LOOKUP, RuntimeErrorOperation.MODEL_INSPECT_NAME, RuntimeErrorOperation.MODEL_MEMBERSHIP, RuntimeErrorOperation.MODEL_ENUMERATE_VERSIONS) else RuntimeInstanceInspectionStatus if self.operation is RuntimeErrorOperation.INSTANCE_INSPECT else RuntimeValidationStatus if self.operation is RuntimeErrorOperation.INSTANCE_VALIDATE else RuntimeArtifactLoadStatus
+        if type(self.source_status) is not expected_status:
+            raise ValueError('Source status family must match the original operation-specific result.')
+        if self.source_status in (RuntimeArtifactLoadStatus.SUCCEEDED, RuntimeModelLookupStatus.FOUND, RuntimeInstanceInspectionStatus.FOUND, RuntimeInstanceInspectionStatus.MISSING, RuntimeValidationStatus.VALID) and (self.errors.errors or self.errors.omitted_errors):
+            raise ValueError('Successful authoritative result cannot acquire fabricated failure evidence.')
+        if self.source_status in (RuntimeArtifactLoadStatus.SUCCEEDED, RuntimeModelLookupStatus.FOUND, RuntimeInstanceInspectionStatus.FOUND, RuntimeInstanceInspectionStatus.MISSING, RuntimeValidationStatus.VALID) and any(d.source.severity is RuntimeLoadSeverity.ERROR for d in self.diagnostics):
+            raise ValueError('Successful result association cannot retain contradictory fatal diagnostics.')
+        if self.source_status not in (RuntimeArtifactLoadStatus.SUCCEEDED, RuntimeModelLookupStatus.FOUND, RuntimeModelLookupStatus.NOT_FOUND, RuntimeModelLookupStatus.AMBIGUOUS, RuntimeInstanceInspectionStatus.FOUND, RuntimeInstanceInspectionStatus.MISSING, RuntimeValidationStatus.VALID) and not self.errors.errors and self.errors.omitted_errors == 0:
+            raise ValueError('Failure/incomplete association needs known errors or explicit unavailable-detail fallback.')
+
+    @property
+    def detail_complete(self) -> bool:
+        return self.omitted_diagnostics == 0 and self.errors.detail_complete
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorPolicy:
+    maximum_errors: int = 128
+    maximum_diagnostics: int = 256
+    maximum_causes: int = 32
+    maximum_cause_depth: int = 8
+    maximum_targets: int = 128
+    maximum_message_length: int = 256
+
+    def __post_init__(self) -> None:
+        ceilings = (1024, 1024, 128, 32, 128, 1024)
+        if any(type(getattr(self, f.name)) is not int or not 1 <= getattr(self, f.name) <= ceiling for f, ceiling in zip(fields(self), ceilings)):
+            raise ValueError('Owner error-detail ceilings are positive actual bounded integers.')
+        if self.maximum_message_length < max(len(m) for m in _RUNTIME_ERROR_MESSAGES.values()):
+            raise ValueError('Message budget must admit every controlled template; never truncate machine meaning.')
+
+
+class RuntimeErrorFactory:
+    """Pure mapping/composition. No validators, registry/instance actions or IO."""
+    __slots__ = ('_policy',)
+
+    def __init__(self, policy: RuntimeErrorPolicy | None = None):
+        if policy is not None and type(policy) is not RuntimeErrorPolicy:
+            raise TypeError('Owner supplies an immutable typed error construction policy.')
+        self._policy = RuntimeErrorPolicy() if policy is None else policy
+
+    @staticmethod
+    def _context(source, supplied=None):
+        if supplied is not None and type(supplied) is not RuntimeErrorContext:
+            raise TypeError('Explicit supplied error context must contain actual trusted typed coordinates.')
+        scope = source.registry_scope if type(source) is RuntimeArtifactLoadDiagnostic else source.scope if type(source) in (RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic) else source.registry_scope if type(source) is ExecutionContextDiagnostic else None
+        semantic = source.semantic_context if type(source) in (RuntimeArtifactLoadDiagnostic, ExecutionContextDiagnostic) else scope.semantic_context if scope is not None else None
+        target = source.runtime_target if type(source) is RuntimeArtifactLoadDiagnostic else scope.runtime_target if scope is not None else None
+        invocation = source.invocation_identity if type(source) is ExecutionContextDiagnostic else None
+        correlation = source.correlation_identity if type(source) is ExecutionContextDiagnostic else None
+        cause = source.causation if type(source) is ExecutionContextDiagnostic else None
+        values = (semantic, target, scope, invocation, correlation, cause)
+        if supplied is not None:
+            original = tuple(getattr(supplied, f.name) for f in fields(supplied))
+            if any(a is not None and b is not None and a != b for a, b in zip(values, original)):
+                raise ValueError('Supplied context cannot overwrite contradictory original diagnostic associations.')
+            values = tuple(a if a is not None else b for a, b in zip(values, original))
+        return RuntimeErrorContext(*values)
+
+    def _target(self, source):
+        refs = source.semantic_origins if type(source) is RuntimeArtifactLoadDiagnostic else ()
+        exact = source.definition_identity if type(source) in (RuntimeArtifactLoadDiagnostic, RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic, ExecutionContextDiagnostic) else None
+        if exact is not None and exact not in refs:
+            refs = (exact, *refs)
+        maximum = self._policy.maximum_targets
+        manifest = source.manifest_identity if type(source) in (RuntimeArtifactLoadDiagnostic, RuntimeArtifactReaderDiagnostic) else None
+        manifest_safe = manifest is not None and len(manifest) <= 160 and re.fullmatch(r'manifest-[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*', manifest) is not None
+        return RuntimeErrorTarget(
+            source.artifact_key if type(source) in (RuntimeArtifactLoadDiagnostic, RuntimeArtifactReaderDiagnostic) else None,
+            source.artifact_kind if type(source) in (RuntimeArtifactLoadDiagnostic, RuntimeArtifactReaderDiagnostic) else None,
+            manifest if manifest_safe else None,
+            refs[:maximum], source.instance_identity if type(source) in (RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic) else None,
+            source.field_id if type(source) in (RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic) else None,
+            source.constraint_kind if type(source) in (RuntimeInstanceDiagnostic, RuntimeValidationDiagnostic) else None,
+            source.expected_revision if type(source) is RuntimeInstanceDiagnostic else source.revision if type(source) is RuntimeValidationDiagnostic else None), max(0, len(refs) - maximum) + int(manifest is not None and not manifest_safe)
+
+    def create(self, code: RuntimeErrorCode, operation: RuntimeErrorOperation, *, context: RuntimeErrorContext | None = None,
+               target: RuntimeErrorTarget | None = None, severity: RuntimeLoadSeverity = RuntimeLoadSeverity.ERROR,
+               diagnostics: tuple[RuntimeErrorDiagnosticAssociation, ...] = (), causes: tuple[RuntimeErrorCause, ...] = (),
+               omitted_diagnostics: int = 0, omitted_causes: int = 0, omitted_targets: int = 0) -> RuntimeErrorDetail:
+        if type(code) is not RuntimeErrorCode or type(operation) is not RuntimeErrorOperation or not _typed_tuple(diagnostics, RuntimeErrorDiagnosticAssociation) or not _typed_tuple(causes, RuntimeErrorCause):
+            raise TypeError('Factory constructs from typed explicit codes/operations/known evidence only.')
+        if any(type(v) is not int or v < 0 for v in (omitted_diagnostics, omitted_causes, omitted_targets)):
+            raise ValueError('Omission counts must be actual nonnegative integers, not Boolean counters.')
+        kept = diagnostics[:self._policy.maximum_diagnostics]
+        kept_causes = tuple(c for c in causes[:self._policy.maximum_causes] if c.depth <= self._policy.maximum_cause_depth)
+        category = _runtime_error_category(code, kept)
+        actual_target = RuntimeErrorTarget() if target is None else target
+        if type(actual_target) is not RuntimeErrorTarget:
+            raise TypeError('Target must preserve actual immutable owned coordinates.')
+        omitted_targets += max(0, len(actual_target.definitions) - self._policy.maximum_targets)
+        actual_target = replace(actual_target, definitions=actual_target.definitions[:self._policy.maximum_targets])
+        return RuntimeErrorDetail(code, category, severity, operation,
+            RuntimeErrorContext() if context is None else context, actual_target,
+            _runtime_safe_error_message(code, category), kept, kept_causes,
+            omitted_diagnostics + len(diagnostics) - len(kept), omitted_causes + len(causes) - len(kept_causes), omitted_targets)
+
+    @staticmethod
+    def _source_operation(source, fallback):
+        if type(source) is RuntimeArtifactLoadDiagnostic and source.registry_operation is not None:
+            return {RuntimeModelRegistryOperation.REGISTER: RuntimeErrorOperation.MODEL_REGISTER,
+                RuntimeModelRegistryOperation.LOOKUP: RuntimeErrorOperation.MODEL_LOOKUP,
+                RuntimeModelRegistryOperation.INSPECT_NAME: RuntimeErrorOperation.MODEL_INSPECT_NAME,
+                RuntimeModelRegistryOperation.ENUMERATE_VERSIONS: RuntimeErrorOperation.MODEL_ENUMERATE_VERSIONS,
+                RuntimeModelRegistryOperation.SNAPSHOT: RuntimeErrorOperation.MODEL_SNAPSHOT}[source.registry_operation]
+        return fallback
+
+    def _diagnostic_error(self, source, operation, index, supplied=None):
+        association = RuntimeErrorDiagnosticAssociation(source, index)
+        known = association.code in _RUNTIME_ERROR_CATEGORIES
+        code = RuntimeErrorCode(association.code if known else 'RUN-503')
+        target, omitted = self._target(source)
+        lower = source.reader_diagnostics if type(source) is RuntimeArtifactLoadDiagnostic else source.registry_causes if type(source) is RuntimeInstanceDiagnostic else ()
+        related, causes, lower_omitted_targets = [association], [], 0
+        for i, diagnostic in enumerate(lower[:self._policy.maximum_causes]):
+            ref = RuntimeErrorDiagnosticAssociation(diagnostic, i)
+            related.append(ref)
+            raw = ref.code
+            cause_code = RuntimeErrorCode(raw) if raw in _RUNTIME_ERROR_CATEGORIES else None
+            cause_target, dropped = self._target(diagnostic)
+            lower_omitted_targets += dropped
+            causes.append(RuntimeErrorCause(RuntimeErrorCauseKind.DIRECT_UNDERLYING if diagnostic.severity is RuntimeLoadSeverity.ERROR else RuntimeErrorCauseKind.RELATED_DIAGNOSTIC, cause_code,
+                _RUNTIME_ERROR_CATEGORIES[raw] if cause_code is not None else RuntimeErrorCategory.UNKNOWN,
+                RuntimeErrorOperation.ARTIFACT_READ if type(source) is RuntimeArtifactLoadDiagnostic else self._source_operation(diagnostic, RuntimeErrorOperation.MODEL_LOOKUP),
+                self._context(diagnostic), cause_target, ref))
+        return self.create(code, operation, context=self._context(source, supplied), target=target,
+            severity=source.severity, diagnostics=tuple(related), causes=tuple(causes),
+            omitted_causes=max(0, len(lower) - len(causes)), omitted_targets=omitted + lower_omitted_targets)
+
+    def wrap(self, lower: RuntimeErrorDetail, code: RuntimeErrorCode, operation: RuntimeErrorOperation, *, context: RuntimeErrorContext | None = None, target: RuntimeErrorTarget | None = None) -> RuntimeErrorDetail:
+        if type(lower) is not RuntimeErrorDetail:
+            raise TypeError('Wrapping needs an actual lower failure, never shared correlation or an exception guess.')
+        direct = RuntimeErrorCause(RuntimeErrorCauseKind.DIRECT_UNDERLYING, lower.code, lower.category,
+            lower.operation, lower.context, lower.target, lower.diagnostics[0] if lower.diagnostics else None)
+        deeper = tuple(replace(c, depth=c.depth + 1) for c in lower.causes if c.depth < 32)
+        return self.create(code, operation, context=lower.context if context is None else context,
+            target=lower.target if target is None else target, severity=lower.severity,
+            diagnostics=lower.diagnostics, causes=(direct, *deeper), omitted_diagnostics=lower.omitted_diagnostics,
+            omitted_causes=lower.omitted_causes + len(lower.causes) - len(deeper), omitted_targets=lower.omitted_targets)
+
+    def aggregate(self, collections: tuple[RuntimeErrorCollection, ...]) -> RuntimeErrorCollection:
+        if not _typed_tuple(collections, RuntimeErrorCollection) or len(collections) > 128:
+            raise TypeError('Aggregation uses finite ordered source collections, preserving every duplicate occurrence.')
+        items, omitted = [], sum(c.omitted_errors for c in collections)
+        for collection in collections:
+            available = self._policy.maximum_errors - len(items)
+            items.extend(collection.errors[:available])
+            omitted += max(0, len(collection.errors) - available)
+        return RuntimeErrorCollection(tuple(items), omitted)
+
+    def map_result(self, result, operation: RuntimeErrorOperation, *, context: RuntimeErrorContext | None = None, include_not_found: bool = False) -> RuntimeErrorResultAssociation:
+        allowed = {
+            RuntimeArtifactLoadResult: (RuntimeErrorOperation.ARTIFACT_LOAD,),
+            RuntimeModelRegistrationResult: (RuntimeErrorOperation.MODEL_REGISTER,),
+            RuntimeModelLookupResult: (RuntimeErrorOperation.MODEL_LOOKUP, RuntimeErrorOperation.MODEL_INSPECT_NAME),
+            RuntimeModelMembershipResult: (RuntimeErrorOperation.MODEL_MEMBERSHIP,),
+            RuntimeModelVersionInspectionResult: (RuntimeErrorOperation.MODEL_ENUMERATE_VERSIONS,),
+            RuntimeModelRegistrySnapshotResult: (RuntimeErrorOperation.MODEL_SNAPSHOT,),
+            RuntimeInstanceOperationResult: (RuntimeErrorOperation.INSTANCE_CREATE, RuntimeErrorOperation.INSTANCE_UPDATE),
+            RuntimeInstanceInspectionResult: (RuntimeErrorOperation.INSTANCE_INSPECT,),
+            RuntimeValidationResult: (RuntimeErrorOperation.INSTANCE_VALIDATE,),
+            ExecutionContextCreationResult: (RuntimeErrorOperation.CONTEXT_CREATE, RuntimeErrorOperation.CONTEXT_DERIVE),
+        }
+        if type(result) not in allowed or type(operation) is not RuntimeErrorOperation or operation not in allowed[type(result)] or type(include_not_found) is not bool or context is not None and type(context) is not RuntimeErrorContext:
+            raise TypeError('Map only existing operation-specific results with explicit compatible operation/context.')
+        status, originals = result.status, result.diagnostics
+        success = status in (RuntimeArtifactLoadStatus.SUCCEEDED, RuntimeModelLookupStatus.FOUND,
+            RuntimeInstanceInspectionStatus.FOUND, RuntimeInstanceInspectionStatus.MISSING, RuntimeValidationStatus.VALID)
+        routine = status in (RuntimeModelLookupStatus.NOT_FOUND, RuntimeModelLookupStatus.AMBIGUOUS)
+        project_routine = status is RuntimeModelLookupStatus.NOT_FOUND and include_not_found
+        related = tuple(RuntimeErrorDiagnosticAssociation(d, i) for i, d in enumerate(originals[:self._policy.maximum_diagnostics]))
+        error_items, omitted_errors = [], 0
+        for i, d in enumerate(originals):
+            if success or routine and not project_routine or d.severity is not RuntimeLoadSeverity.ERROR and not project_routine:
+                continue
+            if len(error_items) >= self._policy.maximum_errors:
+                omitted_errors += 1
+                continue
+            if type(d) is RuntimeInstanceDiagnostic:
+                actual_operation = {RuntimeInstanceOperation.CREATE: RuntimeErrorOperation.INSTANCE_CREATE,
+                    RuntimeInstanceOperation.UPDATE: RuntimeErrorOperation.INSTANCE_UPDATE,
+                    RuntimeInstanceOperation.INSPECT: RuntimeErrorOperation.INSTANCE_INSPECT}[d.operation]
+                if actual_operation is not operation:
+                    raise ValueError('Explicit error operation cannot contradict original instance diagnostic.')
+            if self._source_operation(d, operation) is not operation:
+                raise ValueError('Explicit operation cannot contradict original registry diagnostic.')
+            error_items.append(self._diagnostic_error(d, operation, i, context))
+        if not success and not routine and not error_items and omitted_errors == 0:
+            # Cause UNKNOWN is honest lack-of-detail evidence, not a new diagnosis.
+            error_items.append(self.create(RuntimeErrorCode('RUN-503'), operation, context=context))
+        # RUN-03 actually retained the authoritative RUN-04 report. Preserve the
+        # known lower report as RELATED evidence, not guessed one-field causality.
+        if type(result) is RuntimeInstanceOperationResult and not success and result.validation_result is not None and error_items:
+            lower = self.map_result(result.validation_result, RuntimeErrorOperation.INSTANCE_VALIDATE)
+            first = error_items[0]
+            extra = tuple(RuntimeErrorCause(RuntimeErrorCauseKind.RELATED_DIAGNOSTIC, e.code, e.category,
+                e.operation, e.context, e.target, e.diagnostics[0] if e.diagnostics else None) for e in lower.errors.errors[:self._policy.maximum_causes])
+            error_items[0] = self.create(first.code, first.operation, context=first.context, target=first.target,
+                severity=first.severity, diagnostics=first.diagnostics, causes=first.causes + extra,
+                omitted_diagnostics=first.omitted_diagnostics + lower.omitted_diagnostics, omitted_causes=first.omitted_causes + lower.errors.omitted_errors + max(0, len(lower.errors.errors) - len(extra)), omitted_targets=first.omitted_targets)
+        return RuntimeErrorResultAssociation(operation, status, RuntimeErrorCollection(tuple(error_items), omitted_errors),
+            related, max(0, len(originals) - len(related)), result.complete if type(result) is RuntimeValidationResult else None)
+
+    def map_expected(self, exception: RuntimeArtifactLoadError | RuntimeInstanceError, operation: RuntimeErrorOperation, *, context: RuntimeErrorContext | None = None) -> RuntimeErrorResultAssociation:
+        if type(exception) is RuntimeInstanceError and operation in (RuntimeErrorOperation.INSTANCE_CREATE, RuntimeErrorOperation.INSTANCE_UPDATE):
+            result = RuntimeInstanceOperationResult(exception.status, diagnostics=exception.diagnostics, validation_result=exception.validation_result)
+        elif type(exception) is RuntimeArtifactLoadError and operation in (RuntimeErrorOperation.ARTIFACT_LOAD, RuntimeErrorOperation.MODEL_REGISTER, RuntimeErrorOperation.MODEL_SNAPSHOT):
+            result_type = {RuntimeErrorOperation.ARTIFACT_LOAD: RuntimeArtifactLoadResult,
+                RuntimeErrorOperation.MODEL_REGISTER: RuntimeModelRegistrationResult,
+                RuntimeErrorOperation.MODEL_SNAPSHOT: RuntimeModelRegistrySnapshotResult}[operation]
+            result = result_type(exception.status, diagnostics=exception.diagnostics)
+        else:
+            raise TypeError('Expected exception mapping requires compatible existing narrow runtime exception/operation.')
+        return self.map_result(result, operation, context=context)
+
+    def from_unexpected(self, exception: BaseException, operation: RuntimeErrorOperation, *, context: RuntimeErrorContext | None = None) -> RuntimeErrorDetail:
+        """Explicit outer boundary only; never wrap a domain method in broad catch.
+
+        No exception object/type/message/traceback survives into the value; caller
+        retains standard approved logging/rethrow policy outside this transform.
+        """
+        if not isinstance(exception, BaseException):
+            raise TypeError('Unexpected boundary needs an actual exception, not an arbitrary client claim.')
+        if not isinstance(exception, Exception) or isinstance(exception, (FutureCancelledError, BaseExceptionGroup)):
+            raise exception  # preserve cancellation/process termination signals
+        if isinstance(exception, (RuntimeArtifactLoadError, RuntimeInstanceError)):
+            raise TypeError('Expected runtime rejection must use its diagnostic-preserving adapter.')
+        code = RuntimeErrorCode('RUN-502' if isinstance(exception, OSError) else 'RUN-501')
+        return self.create(code, operation, context=context)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorPresentationPolicy:
+    """Trusted server presentation choice, not client permission or a tenant policy."""
+    exposed_codes: tuple[RuntimeErrorCode, ...] = ()
+    maximum_items: int = 1
+    correlation_identity: ExecutionCorrelationId | None = None
+
+    def __post_init__(self) -> None:
+        if not _typed_tuple(self.exposed_codes, RuntimeErrorCode) or len(self.exposed_codes) > 256 or len(set(self.exposed_codes)) != len(self.exposed_codes) or type(self.maximum_items) is not int or not 1 <= self.maximum_items <= 1024 or self.correlation_identity is not None and type(self.correlation_identity) is not ExecutionCorrelationId:
+            raise TypeError('Presentation allowlist/size/correlation are explicit immutable owner choices.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorPublicItem:
+    code: RuntimeErrorCode
+    category: RuntimeErrorCategory
+    safe_message: str
+    correlation_identity: ExecutionCorrelationId | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.code) is not RuntimeErrorCode or type(self.category) is not RuntimeErrorCategory or self.code.value != 'RUN-006' and self.category is not _RUNTIME_ERROR_CATEGORIES[self.code.value] or type(self.safe_message) is not str or self.safe_message != _runtime_safe_error_message(self.code, self.category) or self.correlation_identity is not None and type(self.correlation_identity) is not ExecutionCorrelationId:
+            raise TypeError('Public view carries only controlled code/category/message and explicitly approved correlation.')
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeErrorPublicView:
+    items: tuple[RuntimeErrorPublicItem, ...]
+    limited: bool
+
+    def __post_init__(self) -> None:
+        if not _typed_tuple(self.items, RuntimeErrorPublicItem) or len(self.items) > 1024 or type(self.limited) is not bool:
+            raise TypeError('Public projection is immutable bounded presentation, not authoritative failure evidence.')
+
+
+def present_runtime_errors(collection: RuntimeErrorCollection, policy: RuntimeErrorPresentationPolicy | None = None) -> RuntimeErrorPublicView:
+    if type(collection) is not RuntimeErrorCollection or policy is not None and type(policy) is not RuntimeErrorPresentationPolicy:
+        raise TypeError('Projection accepts only actual internal collection and trusted server presentation policy.')
+    config = RuntimeErrorPresentationPolicy() if policy is None else policy
+    items = []
+    for error in collection.errors[:config.maximum_items]:
+        disclose = error.code in config.exposed_codes
+        code = error.code if disclose else RuntimeErrorCode('RUN-505')
+        category = error.category if disclose else RuntimeErrorCategory.UNKNOWN
+        correlation = config.correlation_identity if config.correlation_identity == error.context.correlation_identity else None
+        items.append(RuntimeErrorPublicItem(code, category, _runtime_safe_error_message(code, category), correlation))
+    return RuntimeErrorPublicView(tuple(items), not collection.detail_complete or len(collection.errors) > len(items)
+        or any(e.diagnostics or e.causes or e.target != RuntimeErrorTarget() or e.code not in config.exposed_codes for e in collection.errors))
+
+
+__all__ += ['RuntimeErrorCategory', 'RuntimeErrorOperation', 'RuntimeErrorCode', 'RuntimeErrorContext',
+    'RuntimeErrorTarget', 'RuntimeErrorDiagnosticAssociation', 'RuntimeErrorCauseKind', 'RuntimeErrorCause',
+    'RuntimeErrorDetail', 'RuntimeErrorCollection', 'RuntimeErrorResultAssociation', 'RuntimeErrorPolicy',
+    'RuntimeErrorFactory', 'RuntimeErrorPresentationPolicy', 'RuntimeErrorPublicItem',
+    'RuntimeErrorPublicView', 'present_runtime_errors']
